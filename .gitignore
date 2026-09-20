@@ -1,0 +1,42 @@
+# Maven target directories
+target/
+**/target/
+*.jar
+*.war
+*.ear
+*.class
+
+# Eclipse / Spring Tool Suite (STS)
+.metadata/
+.recommenders/
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+.settings/
+.project
+.classpath
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Windows temporary files
+*.bat.bak

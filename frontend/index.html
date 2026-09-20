@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CinePass | High-Concurrency Entertainment Ticketing Portal</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎬</text></svg>">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header class="navbar">
+        <div class="nav-container">
+            <div class="brand">
+                <div class="brand-icon">🎬</div>
+                <div class="brand-text">
+                    <span class="brand-title">CinePass</span>
+                    <span class="brand-badge">Engine v1.0</span>
+                </div>
+            </div>
+
+            <nav class="nav-links">
+                <button class="nav-btn active" data-tab="movies-view">🍿 Movies & Shows</button>
+                <button class="nav-btn" data-tab="bookings-view">🎟️ My Bookings</button>
+                <button class="nav-btn" data-tab="simulator-view" id="sim-nav-btn" style="display: none;">⚡ Concurrency Simulator</button>
+                <button class="nav-btn" data-tab="admin-view" id="admin-nav-btn" style="display: none;">👑 Admin Console</button>
+            </nav>
+
+            <div class="auth-section" id="auth-section">
+                <!-- Injected via JavaScript -->
+            </div>
+        </div>
+    </header>
+
+    <!-- Global Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Main Container -->
+    <main class="main-content">
+        <!-- Hero Section -->
+        <section class="hero-banner">
+            <div class="hero-content">
+                <div class="hero-tag">✨ PREMIER ENTERTAINMENT PORTAL</div>
+                <h1 class="hero-title">Book Blockbuster Movies & Reserve Seats Instantly</h1>
+                <p class="hero-subtitle">Discover the latest releases, choose your favorite auditorium seats in real-time, and enjoy instant booking confirmation.</p>
+                
+                <div class="system-health-bar">
+                    <div class="health-item">
+                        <span>🍿 Instant E-Tickets</span>
+                    </div>
+                    <div class="health-item">
+                        <span>💺 Live Seat Selection</span>
+                    </div>
+                    <div class="health-item">
+                        <span>⭐ IMAX 3D & 4K Laser</span>
+                    </div>
+                    <div class="health-item">
+                        <span>⚡ Zero-Wait Confirmation</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 1. Movies & Shows View -->
+        <section id="movies-view" class="view-panel active">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">Now Showing</h2>
+                    <p class="section-desc">Select a blockbuster movie and reserve your preferred showtime.</p>
+                </div>
+                <div class="search-box">
+                    <input type="text" id="movie-search-input" placeholder="Search movies by title..." />
+                    <button class="btn btn-secondary" id="search-movie-btn">🔍 Search</button>
+                    <button class="btn btn-outline" id="reset-search-btn">Reset</button>
+                </div>
+            </div>
+
+            <!-- Movie Cards Grid -->
+            <div class="movies-grid" id="movies-grid">
+                <div class="loading-spinner">Loading movies from catalog...</div>
+            </div>
+
+            <!-- Show Selection Modal / Section -->
+            <div id="show-selection-modal" class="modal">
+                <div class="modal-card modal-lg">
+                    <div class="modal-header">
+                        <div>
+                            <h3 class="modal-title" id="selected-movie-title">Movie Shows</h3>
+                            <span class="modal-subtitle" id="selected-movie-info">Genre • Duration</span>
+                        </div>
+                        <button class="close-modal-btn" onclick="closeShowModal()">✕</button>
+                    </div>
+
+                    <div class="modal-body">
+                        <h4>Available Showtimes & Seat Availability</h4>
+                        <div class="shows-list" id="shows-list">
+                            <!-- Populated dynamically -->
+                        </div>
+
+                        <!-- Interactive Seat Booking Widget -->
+                        <div id="booking-widget" class="booking-widget" style="display: none;">
+                            <div class="screen-indicator">
+                                <div class="screen-bar"></div>
+                                <span class="screen-text">CINEMA SCREEN</span>
+                            </div>
+
+                            <div class="seat-map-container" id="seat-map-container">
+                                <!-- Interactive visual seats -->
+                            </div>
+
+                            <div class="seat-legend">
+                                <div class="legend-item"><span class="seat-box available"></span> Available</div>
+                                <div class="legend-item"><span class="seat-box selected"></span> Selected</div>
+                                <div class="legend-item"><span class="seat-box occupied"></span> Booked</div>
+                            </div>
+
+                            <div class="booking-summary-bar">
+                                <div class="summary-details">
+                                    <span>Selected Show: <strong id="summary-show-id">#101</strong></span>
+                                    <span>Seats to Book: <strong id="summary-seats-count">1</strong></span>
+                                    <span>Estimated Price: <strong id="summary-total-price">$24.00</strong></span>
+                                </div>
+                                <button class="btn btn-primary btn-glow" id="confirm-booking-btn">
+                                    ⚡ Confirm Instant Booking
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2. My Bookings View -->
+        <section id="bookings-view" class="view-panel">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">My CinePass Tickets</h2>
+                    <p class="section-desc">Manage your reserved tickets, view booking confirmations, or process cancellations.</p>
+                </div>
+                <button class="btn btn-secondary" id="refresh-bookings-btn">🔄 Refresh Tickets</button>
+            </div>
+
+            <div class="bookings-grid" id="bookings-grid">
+                <!-- Populated dynamically -->
+            </div>
+        </section>
+
+        <!-- 3. High Concurrency Simulator View -->
+        <section id="simulator-view" class="view-panel">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">⚡ High-Concurrency Race Condition Simulator</h2>
+                    <p class="section-desc">Live stress-test the CinePass Atomic Allocation Engine against double-booking race conditions.</p>
+                </div>
+            </div>
+
+            <div class="simulator-card">
+                <div class="sim-controls-grid">
+                    <div class="sim-control-group">
+                        <label>Target Show for Stress Contention</label>
+                        <select id="sim-target-show" class="form-input">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+
+                    <div class="sim-control-group">
+                        <label>Concurrent Simulated Users</label>
+                        <input type="number" id="sim-users-count" class="form-input" value="15" min="2" max="50" />
+                    </div>
+
+                    <div class="sim-control-group">
+                        <label>Seats Demanded Per User</label>
+                        <input type="number" id="sim-seats-per-user" class="form-input" value="2" min="1" max="10" />
+                    </div>
+
+                    <div class="sim-control-group align-end">
+                        <button class="btn btn-danger btn-glow" id="run-sim-btn">
+                            🔥 Launch Simultaneous Rush
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Simulation Realtime Dashboard -->
+                <div class="sim-metrics-grid">
+                    <div class="metric-card">
+                        <span class="metric-title">Available Starting Inventory</span>
+                        <span class="metric-val" id="metric-start-inventory">--</span>
+                    </div>
+                    <div class="metric-card success">
+                        <span class="metric-title">Confirmed Allocations (200/201)</span>
+                        <span class="metric-val text-success" id="metric-confirmed">0</span>
+                    </div>
+                    <div class="metric-card danger">
+                        <span class="metric-title">Blocked Overbooking Conflicts (409)</span>
+                        <span class="metric-val text-danger" id="metric-rejected">0</span>
+                    </div>
+                    <div class="metric-card highlight">
+                        <span class="metric-title">Final Database Remaining Seats</span>
+                        <span class="metric-val text-primary" id="metric-final-seats">--</span>
+                    </div>
+                </div>
+
+                <div class="sim-logs-container">
+                    <div class="sim-logs-header">
+                        <span>Real-Time Concurrency Stream Logs</span>
+                        <button class="btn-clean" onclick="clearSimLogs()">Clear Log</button>
+                    </div>
+                    <div class="sim-logs-stream" id="sim-logs-stream">
+                        <div class="log-entry info">Ready to initiate concurrent simulation...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 4. Admin Management Console -->
+        <section id="admin-view" class="view-panel">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">👑 Admin Control Panel</h2>
+                    <p class="section-desc">Create movies, schedule shows, and inspect system-wide allocations.</p>
+                </div>
+            </div>
+
+            <div class="admin-grid">
+                <!-- Add Movie Card -->
+                <div class="admin-card">
+                    <h3 class="admin-card-title">🎬 Add New Movie</h3>
+                    <form id="add-movie-form" class="admin-form">
+                        <div class="form-group">
+                            <label>Movie Title</label>
+                            <input type="text" id="admin-movie-title" class="form-input" placeholder="e.g. Oppenheimer" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Genre</label>
+                            <input type="text" id="admin-movie-genre" class="form-input" placeholder="e.g. Biography/Drama" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Duration (Minutes)</label>
+                            <input type="number" id="admin-movie-duration" class="form-input" placeholder="180" min="1" required />
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Movie to Catalog</button>
+                    </form>
+                </div>
+
+                <!-- Schedule Show Card -->
+                <div class="admin-card">
+                    <h3 class="admin-card-title">📅 Schedule New Show</h3>
+                    <form id="schedule-show-form" class="admin-form">
+                        <div class="form-group">
+                            <label>Select Movie</label>
+                            <select id="admin-show-movie-select" class="form-input" required>
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Showtime (Future Date & Time)</label>
+                            <input type="datetime-local" id="admin-show-time" class="form-input" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Seat Capacity (Available Seats)</label>
+                            <input type="number" id="admin-show-capacity" class="form-input" placeholder="100" min="1" required />
+                        </div>
+                        <button type="submit" class="btn btn-primary">Schedule Show</button>
+                    </form>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Auth Modal (Login / Register) -->
+    <div id="auth-modal" class="modal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title" id="auth-modal-title">CinePass Authentication</h3>
+                    <span class="modal-subtitle">Login or create an account to book cinema tickets</span>
+                </div>
+                <button class="close-modal-btn" onclick="closeAuthModal()">✕</button>
+            </div>
+
+            <div class="auth-tabs">
+                <button class="auth-tab-btn active" id="tab-login-btn" onclick="switchAuthTab('login')">Sign In</button>
+                <button class="auth-tab-btn" id="tab-register-btn" onclick="switchAuthTab('register')">Register</button>
+            </div>
+
+            <!-- Login Form -->
+            <form id="login-form" class="auth-form active">
+                <div class="quick-login-pills">
+                    <button type="button" class="pill-btn" onclick="quickFillLogin('john_doe', 'password123')">⚡ Quick User (john_doe)</button>
+                    <button type="button" class="pill-btn admin" onclick="quickFillLogin('admin', 'password123')">👑 Quick Admin (admin)</button>
+                </div>
+
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="login-username" class="form-input" placeholder="Enter username" required />
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="login-password" class="form-input" placeholder="Enter password" required />
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">Sign In with CinePass</button>
+            </form>
+
+            <!-- Register Form -->
+            <form id="register-form" class="auth-form">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="reg-username" class="form-input" placeholder="Pick a unique username" required />
+                </div>
+                <div class="form-group">
+                    <label>Email Address</label>
+                    <input type="email" id="reg-email" class="form-input" placeholder="name@domain.com" required />
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="reg-password" class="form-input" placeholder="Minimum 6 characters" required />
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">Create Account</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Booking Confirmation Pass Modal -->
+    <div id="ticket-pass-modal" class="modal">
+        <div class="modal-card modal-ticket">
+            <div class="ticket-header">
+                <div class="ticket-badge">🎉 BOOKING CONFIRMED</div>
+                <button class="close-modal-btn" onclick="closeTicketModal()">✕</button>
+            </div>
+            <div class="ticket-body">
+                <div class="ticket-movie" id="ticket-movie-title">Movie Title</div>
+                <div class="ticket-details-grid">
+                    <div class="ticket-detail">
+                        <span class="lbl">Booking ID</span>
+                        <span class="val" id="ticket-booking-id">#5001</span>
+                    </div>
+                    <div class="ticket-detail">
+                        <span class="lbl">Seats</span>
+                        <span class="val" id="ticket-seats-count">2 Seats</span>
+                    </div>
+                    <div class="ticket-detail">
+                        <span class="lbl">Show ID</span>
+                        <span class="val" id="ticket-show-id">#101</span>
+                    </div>
+                    <div class="ticket-detail">
+                        <span class="lbl">Status</span>
+                        <span class="val status-confirmed" id="ticket-status">CONFIRMED</span>
+                    </div>
+                </div>
+                <div class="ticket-barcode">
+                    <div class="barcode-lines"></div>
+                    <span class="barcode-num">CINEPASS-SECURE-ALLOCATION-2026</span>
+                </div>
+            </div>
+            <div class="ticket-footer">
+                <button class="btn btn-secondary btn-block" onclick="closeTicketModal()">Done & View My Bookings</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+

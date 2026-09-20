@@ -1,0 +1,167 @@
+===============================================================================
+       CINEPASS MICROSERVICES - COMPLETE PROJECT URLS & SWAGGER DIRECTORY
+===============================================================================
+
+PROJECT TITLE:
+High-Concurrency Entertainment Ticketing & Seat Allocation Engine – CinePass
+
+-------------------------------------------------------------------------------
+1. WEB PORTAL & SERVICE DISCOVERY DASHBOARDS
+-------------------------------------------------------------------------------
+
+• CinePass Web Frontend & Concurrency Simulator:
+  http://localhost:8080/
+
+• Eureka Service Discovery Dashboard:
+  http://localhost:8761/
+
+
+-------------------------------------------------------------------------------
+2. SWAGGER UI & OPENAPI DOCUMENTATION URLS
+-------------------------------------------------------------------------------
+
+• User Service Swagger UI (Port 8081):
+  http://localhost:8081/swagger-ui.html
+  OpenAPI JSON Spec: http://localhost:8081/v3/api-docs
+
+• Movie Service Swagger UI (Port 8082):
+  http://localhost:8082/swagger-ui.html
+  OpenAPI JSON Spec: http://localhost:8082/v3/api-docs
+
+• Show Service Swagger UI (Port 8083):
+  http://localhost:8083/swagger-ui.html
+  OpenAPI JSON Spec: http://localhost:8083/v3/api-docs
+
+• Booking Service Swagger UI (Port 8084):
+  http://localhost:8084/swagger-ui.html
+  OpenAPI JSON Spec: http://localhost:8084/v3/api-docs
+
+
+-------------------------------------------------------------------------------
+3. COMPLETE REST API ENDPOINTS LIST
+-------------------------------------------------------------------------------
+
+Note: You can access all endpoints through the API Gateway on port 8080 or 
+directly through each microservice's port.
+
+A. USER SERVICE (Port: 8081 | Gateway: http://localhost:8080/api/users)
+-----------------------------------------------------------------------
+• POST   /api/users/signup
+  Description : Register a new user with BCrypt encrypted password
+  Access      : Public
+  Payload     : { "username": "...", "email": "...", "password": "...", "role": "USER" }
+
+• POST   /api/users/signin
+  Description : Authenticate user with username/email & password, returns JWT token
+  Access      : Public
+  Payload     : { "username": "...", "password": "..." }
+
+• GET    /api/users/{id}
+  Description : Fetch user profile by ID
+  Access      : Protected (JWT Bearer Token)
+
+• GET    /api/users
+  Description : Fetch all users list (passwords masked)
+  Access      : Protected (JWT Bearer Token)
+
+
+B. MOVIE SERVICE (Port: 8082 | Gateway: http://localhost:8080/api/movies)
+-------------------------------------------------------------------------
+• GET    /api/movies
+  Description : Retrieve all movies in catalog
+  Access      : Public
+
+• GET    /api/movies/{id}
+  Description : Retrieve movie details by ID
+  Access      : Public
+
+• POST   /api/movies
+  Description : Add a new movie to catalog
+  Access      : Protected (Admin JWT)
+  Payload     : { "title": "...", "genre": "...", "duration": 150 }
+
+• PUT    /api/movies/{id}
+  Description : Update existing movie details
+  Access      : Protected (Admin JWT)
+
+• DELETE /api/movies/{id}
+  Description : Delete movie by ID
+  Access      : Protected (Admin JWT)
+
+
+C. SHOW SERVICE (Port: 8083 | Gateway: http://localhost:8080/api/shows)
+-----------------------------------------------------------------------
+• GET    /api/shows
+  Description : Retrieve all scheduled shows
+  Access      : Public
+
+• GET    /api/shows/{id}
+  Description : Retrieve show details & live seat inventory
+  Access      : Public
+
+• GET    /api/shows/movie/{movieId}
+  Description : Retrieve all scheduled shows for a specific movie
+  Access      : Public
+
+• POST   /api/shows
+  Description : Schedule a new show
+  Access      : Protected (Admin JWT)
+  Payload     : { "movieId": 1, "showTime": "2026-10-01T18:30:00", "availableSeats": 100 }
+
+• PUT    /api/shows/{id}
+  Description : Update show details
+  Access      : Protected (Admin JWT)
+
+• DELETE /api/shows/{id}
+  Description : Cancel/Delete scheduled show
+  Access      : Protected (Admin JWT)
+
+• POST   /api/shows/{id}/book?seats={n}
+  Description : Atomically reserve seats (High-concurrency safe, returns 200 or 409)
+  Access      : Protected / Internal
+
+• POST   /api/shows/{id}/cancel?seats={n}
+  Description : Atomically refund seats on booking cancellation
+  Access      : Protected / Internal
+
+
+D. BOOKING SERVICE (Port: 8084 | Gateway: http://localhost:8080/api/bookings)
+-----------------------------------------------------------------------------
+• POST   /api/bookings
+  Description : Book cinema tickets with atomic concurrency locking
+  Access      : Protected (JWT Bearer Token)
+  Payload     : { "showId": 101, "seatsBooked": 2 }
+
+• GET    /api/bookings/{id}
+  Description : Get booking details and confirmation status by ID
+  Access      : Protected (JWT Bearer Token)
+
+• GET    /api/bookings/user/{userId}
+  Description : Get all bookings for a user
+  Access      : Protected (JWT Bearer Token)
+
+• GET    /api/bookings/show/{showId}
+  Description : Get all bookings for a specific show
+  Access      : Protected (JWT Bearer Token)
+
+• DELETE /api/bookings/{id}
+  Description : Cancel booking and refund seats to inventory
+  Access      : Protected (JWT Bearer Token)
+
+
+-------------------------------------------------------------------------------
+4. DEFAULT DEMONSTRATION CREDENTIALS
+-------------------------------------------------------------------------------
+
+• Regular User:
+  Username : john_doe  (or email: john@cinepass.com)
+  Password : password123
+  Role     : USER
+
+• Administrator:
+  Username : admin     (or email: admin@cinepass.com)
+  Password : password123
+  Role     : ADMIN
+
+===============================================================================
+
