@@ -77,6 +77,11 @@ public class ShowController {
             @PathVariable("id") Long id,
             @RequestParam("seats") int seats) {
         Map<String, Object> response = new HashMap<>();
+        if (seats <= 0) {
+            response.put("code", 400);
+            response.put("message", "Seats must be greater than zero");
+            return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
+        }
         boolean success = showService.reserveSeats(id, seats);
         if (success) {
             response.put("code", 200);
@@ -95,7 +100,17 @@ public class ShowController {
             @PathVariable("id") Long id,
             @RequestParam("seats") int seats) {
         Map<String, Object> response = new HashMap<>();
-        showService.releaseSeats(id, seats);
+        if (seats <= 0) {
+            response.put("code", 400);
+            response.put("message", "Seats must be greater than zero");
+            return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
+        }
+        boolean success = showService.releaseSeats(id, seats);
+        if (!success) {
+            response.put("code", 404);
+            response.put("message", "Show not found");
+            return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+        }
         response.put("code", 200);
         response.put("message", "Seats refunded successfully");
         return ResponseEntity.ok(response);

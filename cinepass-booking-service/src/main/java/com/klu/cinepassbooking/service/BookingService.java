@@ -3,6 +3,7 @@ package com.klu.cinepassbooking.service;
 import com.klu.cinepassbooking.model.Booking;
 import com.klu.cinepassbooking.repo.BookingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -24,7 +25,8 @@ public class BookingService {
     @Autowired
     RestTemplate restTemplate;
 
-    private final String SHOW_SERVICE_URL = "http://localhost:8083/api/shows";
+    @Value("${show.service.url:lb://CINEPASS-SHOW-SERVICE/api/shows}")
+    private String showServiceUrl;
 
     // Anti-Bot in-flight concurrency lock per user
     private final java.util.concurrent.ConcurrentHashMap<Long, Long> activeUserBookings = new java.util.concurrent.ConcurrentHashMap<>();
@@ -55,7 +57,14 @@ public class BookingService {
         }
 
         // Rule 2: Anti-Bot In-Flight User Lock (Rate limit spam from same user ID)
-        Long userId = booking.getUserId() != null ? booking.getUserId() : 1L;
+        if (booking.getUserId() == null || booking.getShowId() == null) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("code", 400);
+            error.put("message", "User ID and show ID are required");
+            return error;
+        }
+
+        Long userId = booking.getUserId();
         Long lastRequestTime = activeUserBookings.get(userId);
         long now = System.currentTimeMillis();
         if (lastRequestTime != null && (now - lastRequestTime) < 400) {
@@ -68,7 +77,7 @@ public class BookingService {
 
         try {
             // Call Show Service to reserve seats atomically
-            String url = SHOW_SERVICE_URL + "/" + booking.getShowId() + "/book?seats=" + booking.getSeatsBooked();
+            String url = showServiceUrl + "/" + booking.getShowId() + "/book?seats=" + booking.getSeatsBooked();
             ResponseEntity<Map> response = restTemplate.postForEntity(url, null, Map.class);
 
             if (response.getStatusCode() == HttpStatus.OK) {
@@ -130,14 +139,24 @@ public class BookingService {
 
         // Refund seats to Show Service
         try {
-            String url = SHOW_SERVICE_URL + "/" + booking.getShowId() + "/cancel?seats=" + booking.getSeatsBooked();
-            restTemplate.postForEntity(url, null, Map.class);
+            String url = showServiceUrl + "/" + booking.getShowId() + "/cancel?seats=" + booking.getSeatsBooked();
+            ResponseEntity<Map> response = restTemplate.postForEntity(url, null, Map.class);
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                return serviceError("Show Service could not release seats");
+            }
         } catch (Exception e) {
-            // Log warning
+            return serviceError("Show Service communication error: " + e.getMessage());
         }
 
         booking.setBookingStatus("CANCELLED");
         return bookingRepository.save(booking);
+    }
+
+    private Map<String, Object> serviceError(String message) {
+        Map<String, Object> error = new HashMap<>();
+        error.put("code", 502);
+        error.put("message", message);
+        return error;
     }
 }
 
