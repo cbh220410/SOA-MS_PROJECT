@@ -2,7 +2,7 @@
 
 ---
 
-## 1. Rubric 1: Problem Analysis (10 Marks)
+## 1. Rubric 1: Problem Analysis  
 
 ### Problem:
 During blockbuster movie releases, cinema ticketing systems experience extreme spikes in user traffic where hundreds of users attempt to book the exact same remaining seats simultaneously for a popular showtime.
@@ -28,7 +28,7 @@ In traditional naive implementations, two or more concurrent requests read the s
 
 ---
 
-## 2. Rubric 2: Requirement Specification (10 Marks)
+## 2. Rubric 2: Requirement Specification  
 
 ### 2.1 Functional Requirements
 1. **User Registration**: `POST /api/users/signup` (username, email, password with BCrypt hashing).
@@ -55,7 +55,7 @@ In traditional naive implementations, two or more concurrent requests read the s
 
 ---
 
-## 3. Rubric 3: Microservice Identification (10 Marks)
+## 3. Rubric 3: Microservice Identification  
 
 | Microservice | Port | Package | Database | Responsibilities |
 | :--- | :--- | :--- | :--- | :--- |
@@ -68,7 +68,7 @@ In traditional naive implementations, two or more concurrent requests read the s
 
 ---
 
-## 4. Rubric 4: System Architecture Design (10 Marks)
+## 4. Rubric 4: System Architecture Design  
 
 ```
                     CLIENT
@@ -105,7 +105,7 @@ Multiple instances of **Booking Service** (e.g., on ports `8084`, `8085`, `8086`
 
 ---
 
-## 5. Rubric 5: API Design & Swagger OpenAPI (10 Marks)
+## 5. Rubric 5: API Design & Swagger OpenAPI  
 
 ### Swagger UI Links:
 - **API Gateway Portal**: [http://localhost:8080/](http://localhost:8080/)
