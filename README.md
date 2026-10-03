@@ -190,12 +190,3 @@ Run each Application class as **Spring Boot App**:
 
 ---
 
-## 8. Final Rubric Mapping
-
-| Rubric Area | Target | Evidence in Project |
-| :--- | :--- | :--- |
-| **Rubric 1: Problem Analysis** | 10/10 | Deep analysis of blockbuster traffic spikes, race condition dynamics, and atomic SQL update solution. |
-| **Rubric 2: Requirement Specification** | 10/10 | Complete functional (15 requirements), non-functional, security, and concurrency requirements specified. |
-| **Rubric 3: Microservice Identification** | 10/10 | Clear boundaries for User, Movie, Show, Booking, API Gateway, and Eureka Server. |
-| **Rubric 4: System Architecture** | 10/10 | Gateway routing, Eureka service discovery, independent DBs, load-balanced Booking service instances. |
-| **Rubric 5: API Design** | 10/10 | Clean resource-based REST APIs, Springdoc Swagger OpenAPI documentation, and JJWT authentication. |
