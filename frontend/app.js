@@ -1,59 +1,162 @@
-// CinePass Portal Application Logic
-const API_BASE_URL = window.location.origin.includes('localhost:8080') 
-    ? window.location.origin 
-    : 'http://localhost:8080';
+/* ==========================================================================
+   CinePass Portal — application logic
+   Talks to the API Gateway only (/api/users, /api/movies, /api/shows,
+   /api/bookings). Works when served by the gateway, from a LAN address,
+   from a local dev server, or opened directly as a file.
+   ========================================================================== */
 
-// Global State
+// ---------------------------------------------------------------------------
+// 0. API connection resolution
+//    Priority: ?api=<url> query  >  saved override  >  same origin (gateway)
+//              >  <current host>:8080  >  http://localhost:8080
+// ---------------------------------------------------------------------------
+const GATEWAY_PORT = '8080';
+const REQUEST_TIMEOUT_MS = 12000;
+
+function resolveApiBase() {
+    try {
+        const qp = new URLSearchParams(window.location.search).get('api');
+        if (qp) {
+            const clean = qp.replace(/\/+$/, '');
+            localStorage.setItem('cinepass_api', clean);
+            return clean;
+        }
+        const saved = localStorage.getItem('cinepass_api');
+        if (saved) return saved.replace(/\/+$/, '');
+    } catch (e) { /* storage unavailable */ }
+
+    const { protocol, hostname, port, origin } = window.location;
+    if (protocol === 'file:' || !hostname) return `http://localhost:${GATEWAY_PORT}`;
+    if (port === GATEWAY_PORT || (port === '' && protocol === 'https:')) return origin;
+    // Served from a different port (Live Server, etc.): assume gateway on the same host.
+    return `${protocol}//${hostname}:${GATEWAY_PORT}`;
+}
+
+const API_BASE_URL = resolveApiBase();
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
 let currentUser = null;
-let currentToken = localStorage.getItem('cinepass_jwt') || null;
+let currentToken = safeGet('cinepass_jwt');
 let moviesCache = [];
 let showsCache = [];
 let selectedMovie = null;
 let selectedShow = null;
 let selectedSeats = [];
 
-// Initialize on DOM Ready
+const SEAT_ROWS = [
+    { name: 'A', tier: 'Premier Recliner', price: 18.0, count: 8 },
+    { name: 'B', tier: 'Premier Recliner', price: 18.0, count: 8 },
+    { name: 'C', tier: 'Executive', price: 14.0, count: 8 },
+    { name: 'D', tier: 'Executive', price: 14.0, count: 8 },
+    { name: 'E', tier: 'Standard', price: 10.0, count: 8 }
+];
+const BOOKING_FEE = 1.5;
+const MAX_SEATS = 6;
+
 document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('footer-api').textContent = API_BASE_URL;
     initAuth();
     initNavigation();
+    setupEventListeners();
     loadMovies();
     loadShowsForAdminAndSim();
-    setupEventListeners();
 });
 
-// =========================================================================
-// 1. Authentication & Session Management
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 1. HTTP helper
+// ---------------------------------------------------------------------------
+function safeGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+function safeSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* ignore */ }
+}
+function safeRemove(key) {
+    try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
+}
+
+/**
+ * Fetch wrapper: timeout, safe JSON parsing, optional auth header.
+ * Always resolves with { ok, status, data, networkError }.
+ */
+async function api(path, { method = 'GET', body, auth = false, headers = {} } = {}) {
+    const opts = { method, headers: { Accept: 'application/json', ...headers } };
+    if (body !== undefined) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+    }
+    if (auth && currentToken) opts.headers['Authorization'] = `Bearer ${currentToken}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    opts.signal = controller.signal;
+
+    try {
+        const res = await fetch(`${API_BASE_URL}${path}`, opts);
+        const text = await res.text();
+        let data = null;
+        if (text) { try { data = JSON.parse(text); } catch (e) { data = { message: text.slice(0, 200) }; } }
+        setConnection(true);
+        if (res.status === 401 && auth) handleSessionExpired();
+        return { ok: res.ok, status: res.status, data, networkError: false };
+    } catch (err) {
+        setConnection(false);
+        const message = err.name === 'AbortError' ? 'The request timed out.' : 'Unable to reach the gateway.';
+        return { ok: false, status: 0, data: { message }, networkError: true };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function errorMessage(result, fallback) {
+    return (result.data && result.data.message) || fallback;
+}
+
+function setConnection(online) {
+    const el = document.getElementById('connection-status');
+    const text = document.getElementById('connection-text');
+    if (!el || !text) return;
+    el.classList.toggle('ok', online);
+    el.classList.toggle('bad', !online);
+    text.textContent = online ? 'Connected' : 'Gateway offline';
+}
+
+function serviceDownBox(title, hint, retryFn) {
+    return `
+        <div class="error-box">
+            <h3>${escapeHtml(title)}</h3>
+            <p>${escapeHtml(hint)}</p>
+            <button class="btn btn-secondary" onclick="${retryFn}">Try again</button>
+        </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// 2. Authentication
+// ---------------------------------------------------------------------------
 function isTokenValid(token) {
     if (!token) return false;
     try {
         const parts = token.split('.');
         if (parts.length !== 3) return false;
-        const payload = JSON.parse(atob(parts[1]));
-        if (!payload.exp) return true;
-        return (payload.exp * 1000) > Date.now();
+        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(b64));
+        return !payload.exp || payload.exp * 1000 > Date.now();
     } catch (e) {
         return false;
     }
 }
 
-function getAuthHeaders() {
-    const headers = { 'Content-Type': 'application/json' };
-    if (currentToken && isTokenValid(currentToken)) {
-        headers['Authorization'] = `Bearer ${currentToken}`;
-    }
-    return headers;
+function isLoggedIn() {
+    return !!(currentUser && currentToken && isTokenValid(currentToken));
 }
 
 function initAuth() {
-    const savedUser = localStorage.getItem('cinepass_user');
+    const savedUser = safeGet('cinepass_user');
     if (savedUser && currentToken) {
         if (isTokenValid(currentToken)) {
-            try {
-                currentUser = JSON.parse(savedUser);
-            } catch (e) {
-                logout(false);
-            }
+            try { currentUser = JSON.parse(savedUser); } catch (e) { logout(false); }
         } else {
             logout(false);
         }
@@ -62,30 +165,26 @@ function initAuth() {
 }
 
 function renderAuthSection() {
-    const authContainer = document.getElementById('auth-section');
-    const adminNavBtn = document.getElementById('admin-nav-btn');
-    const simNavBtn = document.getElementById('sim-nav-btn');
+    const container = document.getElementById('auth-section');
+    const adminBtn = document.getElementById('admin-nav-btn');
+    const simBtn = document.getElementById('sim-nav-btn');
 
-    if (currentUser && currentToken && isTokenValid(currentToken)) {
+    if (isLoggedIn()) {
         const isAdmin = currentUser.role === 'ADMIN';
-        if (adminNavBtn) adminNavBtn.style.display = isAdmin ? 'inline-flex' : 'none';
-        if (simNavBtn) simNavBtn.style.display = isAdmin ? 'inline-flex' : 'none';
-
-        authContainer.innerHTML = `
+        adminBtn.style.display = isAdmin ? 'inline-block' : 'none';
+        simBtn.style.display = isAdmin ? 'inline-block' : 'none';
+        container.innerHTML = `
             <div class="user-badge">
-                <span style="font-size: 1.1rem;">👤</span>
                 <span>${escapeHtml(currentUser.username)}</span>
-                <span class="user-role-tag">${escapeHtml(currentUser.role)}</span>
-                <button class="btn-clean" onclick="logout(true)" style="margin-left: 0.5rem;" title="Logout">🚪</button>
-            </div>
-        `;
+                <span class="user-role-tag">${escapeHtml(currentUser.role || 'USER')}</span>
+                <button class="btn-clean" onclick="logout(true)">Sign out</button>
+            </div>`;
     } else {
-        if (adminNavBtn) adminNavBtn.style.display = 'none';
-        if (simNavBtn) simNavBtn.style.display = 'none';
-        authContainer.innerHTML = `
+        adminBtn.style.display = 'none';
+        simBtn.style.display = 'none';
+        container.innerHTML = `
             <button class="btn btn-secondary" onclick="openAuthModal('login')">Sign In</button>
-            <button class="btn btn-primary" onclick="openAuthModal('register')">Register</button>
-        `;
+            <button class="btn btn-primary" onclick="openAuthModal('register')">Register</button>`;
     }
 }
 
@@ -99,25 +198,12 @@ function closeAuthModal() {
 }
 
 function switchAuthTab(mode) {
-    const loginForm = document.getElementById('login-form');
-    const regForm = document.getElementById('register-form');
-    const loginBtn = document.getElementById('tab-login-btn');
-    const regBtn = document.getElementById('tab-register-btn');
-    const title = document.getElementById('auth-modal-title');
-
-    if (mode === 'login') {
-        loginForm.classList.add('active');
-        regForm.classList.remove('active');
-        loginBtn.classList.add('active');
-        regBtn.classList.remove('active');
-        title.innerText = 'Sign In to CinePass';
-    } else {
-        regForm.classList.add('active');
-        loginForm.classList.remove('active');
-        regBtn.classList.add('active');
-        loginBtn.classList.remove('active');
-        title.innerText = 'Create CinePass Account';
-    }
+    const isLogin = mode === 'login';
+    document.getElementById('login-form').classList.toggle('active', isLogin);
+    document.getElementById('register-form').classList.toggle('active', !isLogin);
+    document.getElementById('tab-login-btn').classList.toggle('active', isLogin);
+    document.getElementById('tab-register-btn').classList.toggle('active', !isLogin);
+    document.getElementById('auth-modal-title').textContent = isLogin ? 'Member Sign In' : 'Create Account';
 }
 
 function quickFillLogin(username, password) {
@@ -129,45 +215,30 @@ async function handleLogin(event) {
     event.preventDefault();
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
-
     if (!username || !password) {
         showToast('Please enter both username and password.', 'error');
         return;
     }
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/users/signin`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password })
-        });
+    // Accept either username or email in the single field.
+    const payload = username.includes('@') ? { email: username, password } : { username, password };
+    const res = await api('/api/users/signin', { method: 'POST', body: payload });
 
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.message || 'Invalid credentials');
-        }
-
-        currentToken = data.jwt;
-        currentUser = {
-            userId: data.userId,
-            username: data.username,
-            role: data.role
-        };
-
-        localStorage.setItem('cinepass_jwt', currentToken);
-        localStorage.setItem('cinepass_user', JSON.stringify(currentUser));
-
-        showToast(`Welcome back, ${data.username}!`, 'success');
-        closeAuthModal();
-        renderAuthSection();
-
-        // Refresh bookings if in Bookings tab
-        if (document.getElementById('bookings-view').classList.contains('active')) {
-            loadUserBookings();
-        }
-    } catch (err) {
-        showToast(err.message, 'error');
+    if (!res.ok || !res.data || !res.data.jwt) {
+        showToast(errorMessage(res, 'Invalid credentials.'), 'error');
+        return;
     }
+
+    currentToken = res.data.jwt;
+    currentUser = { userId: res.data.userId, username: res.data.username || username, role: res.data.role };
+    safeSet('cinepass_jwt', currentToken);
+    safeSet('cinepass_user', JSON.stringify(currentUser));
+
+    showToast(`Welcome, ${currentUser.username}.`, 'success');
+    closeAuthModal();
+    document.getElementById('login-form').reset();
+    renderAuthSection();
+    if (document.getElementById('bookings-view').classList.contains('active')) loadUserBookings();
 }
 
 async function handleRegister(event) {
@@ -176,236 +247,198 @@ async function handleRegister(event) {
     const email = document.getElementById('reg-email').value.trim();
     const password = document.getElementById('reg-password').value;
 
-    if (username.length < 3) {
-        showToast('Username must be at least 3 characters.', 'error');
+    if (username.length < 3) return showToast('Username must be at least 3 characters.', 'error');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showToast('Please enter a valid email address.', 'error');
+    if (password.length < 6) return showToast('Password must be at least 6 characters.', 'error');
+
+    const res = await api('/api/users/signup', { method: 'POST', body: { username, email, password, role: 'USER' } });
+    if (!res.ok) {
+        showToast(errorMessage(res, 'Registration failed.'), 'error');
         return;
     }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-        showToast('Please enter a valid email address.', 'error');
-        return;
-    }
-    if (password.length < 6) {
-        showToast('Password must be at least 6 characters.', 'error');
-        return;
-    }
+    showToast('Registration successful. Please sign in.', 'success');
+    document.getElementById('register-form').reset();
+    switchAuthTab('login');
+    quickFillLogin(username, password);
+}
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/users/signup`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, email, password })
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.message || 'Registration failed');
-        }
-
-        showToast('Registration successful! Please sign in.', 'success');
-        switchAuthTab('login');
-        quickFillLogin(username, password);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
+function handleSessionExpired() {
+    if (!currentToken) return;
+    logout(false);
+    showToast('Your session has expired. Please sign in again.', 'warning');
+    openAuthModal('login');
 }
 
 function logout(notify = true) {
     currentUser = null;
     currentToken = null;
-    localStorage.removeItem('cinepass_jwt');
-    localStorage.removeItem('cinepass_user');
+    safeRemove('cinepass_jwt');
+    safeRemove('cinepass_user');
     renderAuthSection();
-    if (notify) {
-        showToast('Signed out successfully.', 'info');
-    }
+    if (notify) showToast('You have been signed out.', 'info');
     switchView('movies-view');
 }
 
-// =========================================================================
-// 2. Navigation Tabs
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 3. Navigation
+// ---------------------------------------------------------------------------
 function initNavigation() {
-    const navButtons = document.querySelectorAll('.nav-btn');
-    navButtons.forEach(btn => {
+    document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            const targetView = btn.getAttribute('data-tab');
-            switchView(targetView);
+            switchView(btn.getAttribute('data-tab'));
+            closeMobileMenu();
+        });
+    });
+
+    const toggle = document.getElementById('menu-toggle');
+    toggle.addEventListener('click', () => {
+        const panel = document.getElementById('masthead-right');
+        const open = panel.classList.toggle('open');
+        toggle.setAttribute('aria-expanded', String(open));
+    });
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') {
+            closeAuthModal();
+            closeShowModal();
+            document.getElementById('ticket-pass-modal').classList.remove('active');
+        }
+    });
+
+    // Close a modal when the dark backdrop is clicked.
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('mousedown', e => {
+            if (e.target !== modal) return;
+            if (modal.id === 'auth-modal') closeAuthModal();
+            else if (modal.id === 'show-selection-modal') closeShowModal();
         });
     });
 }
 
-function switchView(viewId) {
-    document.querySelectorAll('.view-panel').forEach(panel => panel.classList.remove('active'));
-    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
-
-    const activePanel = document.getElementById(viewId);
-    if (activePanel) activePanel.classList.add('active');
-
-    const activeBtn = document.querySelector(`.nav-btn[data-tab="${viewId}"]`);
-    if (activeBtn) activeBtn.classList.add('active');
-
-    if (viewId === 'bookings-view') {
-        loadUserBookings();
-    } else if (viewId === 'simulator-view' || viewId === 'admin-view') {
-        loadShowsForAdminAndSim();
-    }
+function closeMobileMenu() {
+    document.getElementById('masthead-right').classList.remove('open');
+    document.getElementById('menu-toggle').setAttribute('aria-expanded', 'false');
 }
 
-// =========================================================================
-// 3. Movie Catalog & Shows Exploration
-// =========================================================================
+function switchView(viewId) {
+    document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+    const panel = document.getElementById(viewId);
+    if (panel) panel.classList.add('active');
+    const btn = document.querySelector(`.nav-btn[data-tab="${viewId}"]`);
+    if (btn) btn.classList.add('active');
+
+    document.getElementById('hero').style.display = viewId === 'movies-view' ? '' : 'none';
+
+    if (viewId === 'bookings-view') loadUserBookings();
+    else if (viewId === 'simulator-view' || viewId === 'admin-view') loadShowsForAdminAndSim();
+}
+
+// ---------------------------------------------------------------------------
+// 4. Movies & performances
+// ---------------------------------------------------------------------------
 async function loadMovies() {
     const grid = document.getElementById('movies-grid');
-    grid.innerHTML = '<div class="loading-spinner">Loading movies from catalog...</div>';
+    grid.innerHTML = '<div class="loading-spinner">Loading programme&hellip;</div>';
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/movies`);
-        const movies = await response.json().catch(() => null);
-        
-        if (!response.ok || !Array.isArray(movies)) {
-            grid.innerHTML = `
-                <div style="grid-column: 1/-1; padding: 2.5rem; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 1rem; text-align: center;">
-                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">⚠️</div>
-                    <h3 style="color: #ef4444; font-size: 1.1rem; margin-bottom: 0.5rem;">Movie Service Unavailable (HTTP ${response.status})</h3>
-                    <p style="color: #94a3b8; font-size: 0.88rem; max-width: 500px; margin: 0 auto;">
-                        Please ensure <strong>cinepass-eureka-server</strong> (port 8761) and <strong>cinepass-movie-service</strong> (port 8081) are running in STS and registered.
-                    </p>
-                </div>
-            `;
-            return;
-        }
-
-        moviesCache = movies;
-
-        if (movies.length === 0) {
-            grid.innerHTML = '<p class="text-muted" style="grid-column: 1/-1; text-align: center;">No movies found in catalog.</p>';
-            return;
-        }
-
-        const posters = [
-            { icon: '🌌', bg: 'linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%)', rating: '9.2', tag: 'IMAX 3D' },
-            { icon: '🚀', bg: 'linear-gradient(135deg, #1e293b 0%, #0c1222 100%)', rating: '8.9', tag: 'DOLBY CINEMA' },
-            { icon: '⏳', bg: 'linear-gradient(135deg, #2e1065 0%, #0f172a 100%)', rating: '8.8', tag: '4K LASER' },
-            { icon: '🌊', bg: 'linear-gradient(135deg, #083344 0%, #0f172a 100%)', rating: '8.5', tag: '3D HFR' },
-            { icon: '🦸‍♂️', bg: 'linear-gradient(135deg, #3b0764 0%, #0f172a 100%)', rating: '9.0', tag: '4DX SCREEN' },
-            { icon: '⚔️', bg: 'linear-gradient(135deg, #450a0a 0%, #0f172a 100%)', rating: '8.7', tag: 'ATMOS' }
-        ];
-
-        grid.innerHTML = movies.map((m, idx) => {
-            const p = posters[idx % posters.length];
-            return `
-            <div class="movie-card">
-                <div class="movie-poster-placeholder" style="background: ${p.bg}">
-                    <span style="filter: drop-shadow(0 10px 20px rgba(0,0,0,0.5)); transform: scale(1.15); font-size: 4.5rem;">${p.icon}</span>
-                    <span style="position: absolute; top: 12px; left: 12px; z-index: 3; background: rgba(6,9,19,0.75); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.15); padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.72rem; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;">${p.tag}</span>
-                    <span style="position: absolute; top: 12px; right: 12px; z-index: 3; background: rgba(6,9,19,0.75); backdrop-filter: blur(8px); border: 1px solid rgba(251,191,36,0.3); padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 800; color: #fbbf24;">⭐ ${p.rating}</span>
-                    <span class="movie-duration-badge">⏱️ ${m.duration} mins</span>
-                </div>
-                <div class="movie-body">
-                    <h3 class="movie-title">${escapeHtml(m.title)}</h3>
-                    <span class="movie-genre">${escapeHtml(m.genre)}</span>
-                    <div class="movie-footer">
-                        <button class="btn btn-primary btn-block btn-glow" onclick="openShowsModal(${m.movieId})">
-                            🎟️ Select Showtime & Seats
-                        </button>
-                    </div>
-                </div>
-            </div>
-            `;
-        }).join('');
-
-        populateAdminMovieDropdown(movies);
-    } catch (err) {
-        grid.innerHTML = `<p class="text-danger">Failed to load movies: ${err.message}. Make sure Gateway and Movie service are running.</p>`;
+    const res = await api('/api/movies');
+    if (!res.ok || !Array.isArray(res.data)) {
+        grid.innerHTML = serviceDownBox(
+            res.networkError ? 'Cannot reach the gateway' : `Movie service unavailable (HTTP ${res.status})`,
+            `Expected the API gateway at ${API_BASE_URL}. Make sure the Eureka server, gateway and movie service are running.`,
+            'loadMovies()'
+        );
+        return;
     }
+    moviesCache = res.data;
+    populateAdminMovieDropdown(moviesCache);
+    renderMovies(applyMovieFilter());
 }
 
-async function searchMovies() {
-    const query = document.getElementById('movie-search-input').value.trim();
-    if (!query) {
-        loadMovies();
+function applyMovieFilter() {
+    const q = document.getElementById('movie-search-input').value.trim().toLowerCase();
+    if (!q) return moviesCache;
+    return moviesCache.filter(m =>
+        (m.title || '').toLowerCase().includes(q) || (m.genre || '').toLowerCase().includes(q));
+}
+
+function renderMovies(movies) {
+    const grid = document.getElementById('movies-grid');
+    if (movies.length === 0) {
+        grid.innerHTML = `<div class="empty-state"><h3>No films found</h3><p>No film in the programme matches your search.</p></div>`;
+        return;
+    }
+    grid.innerHTML = movies.map((m, i) => {
+        const initial = escapeHtml((m.title || '?').trim().charAt(0).toUpperCase());
+        return `
+        <article class="movie-card">
+            <div class="movie-poster p${i % 6}">
+                <span class="poster-mono">${initial}</span>
+                <span class="poster-caption">${escapeHtml(m.genre || 'Feature Film')}</span>
+            </div>
+            <div class="movie-body">
+                <h3 class="movie-title">${escapeHtml(m.title)}</h3>
+                <div class="movie-meta">
+                    <span class="movie-genre">${escapeHtml(m.genre)}</span>
+                    <span>${Number(m.duration) || 0} min</span>
+                </div>
+                <div class="movie-footer">
+                    <button class="btn btn-primary btn-block" onclick="openShowsModal(${Number(m.movieId)})">Select Performance</button>
+                </div>
+            </div>
+        </article>`;
+    }).join('');
+}
+
+function searchMovies() { renderMovies(applyMovieFilter()); }
+
+async function openShowsModal(movieId) {
+    selectedMovie = moviesCache.find(m => Number(m.movieId) === movieId);
+    if (!selectedMovie) return;
+    selectedShow = null;
+    selectedSeats = [];
+
+    document.getElementById('selected-movie-title').textContent = selectedMovie.title;
+    document.getElementById('selected-movie-info').textContent = `${selectedMovie.genre} \u00B7 ${selectedMovie.duration} min`;
+    document.getElementById('booking-widget').style.display = 'none';
+    document.getElementById('show-selection-modal').classList.add('active');
+
+    const list = document.getElementById('shows-list');
+    list.innerHTML = '<div class="loading-spinner">Fetching performances&hellip;</div>';
+
+    const res = await api(`/api/shows/movie/${movieId}`);
+    if (!res.ok || !Array.isArray(res.data)) {
+        list.innerHTML = serviceDownBox('Show service unavailable',
+            res.networkError ? 'The gateway could not be reached.' : `The show service returned HTTP ${res.status}.`,
+            `openShowsModal(${movieId})`);
+        return;
+    }
+    if (res.data.length === 0) {
+        list.innerHTML = '<p class="text-muted" style="grid-column:1/-1;">No performances are scheduled for this film yet.</p>';
         return;
     }
 
-    const grid = document.getElementById('movies-grid');
-    grid.innerHTML = '<div class="loading-spinner">Searching...</div>';
-
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/movies/search?title=${encodeURIComponent(query)}`);
-        const movies = await response.json();
-
-        if (movies.length === 0) {
-            grid.innerHTML = `<p class="text-muted">No movies matching "${escapeHtml(query)}"</p>`;
-            return;
-        }
-
-        const posters = ['🎬', '🍿', '🌟', '⚡'];
-        grid.innerHTML = movies.map((m, idx) => `
-            <div class="movie-card">
-                <div class="movie-poster-placeholder">
-                    <span>${posters[idx % posters.length]}</span>
-                    <span class="movie-duration-badge">⏱️ ${m.duration} mins</span>
-                </div>
-                <div class="movie-body">
-                    <h3 class="movie-title">${escapeHtml(m.title)}</h3>
-                    <span class="movie-genre">${escapeHtml(m.genre)}</span>
-                    <div class="movie-footer">
-                        <button class="btn btn-primary btn-block" onclick="openShowsModal(${m.movieId})">
-                            🎟️ View Shows & Book
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-    } catch (err) {
-        showToast('Search failed: ' + err.message, 'error');
-    }
+    showsCache = mergeShows(res.data);
+    list.innerHTML = res.data.map(s => {
+        const d = new Date(s.showTime);
+        const when = isNaN(d) ? escapeHtml(String(s.showTime)) :
+            d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' +
+            d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const low = s.availableSeats < 15;
+        const full = s.availableSeats <= 0;
+        return `
+            <div class="show-slot-card" id="show-slot-${s.showId}" onclick="selectShowSlot(${s.showId})">
+                <div class="show-time-text">${when}</div>
+                <div class="show-seats-count ${low ? 'low' : ''}">${full ? 'Sold out' : `${s.availableSeats} seats left${low ? ' \u2014 selling fast' : ''}`}</div>
+            </div>`;
+    }).join('');
 }
 
-async function openShowsModal(movieId) {
-    selectedMovie = moviesCache.find(m => m.movieId === movieId);
-    if (!selectedMovie) return;
-
-    document.getElementById('selected-movie-title').innerText = selectedMovie.title;
-    document.getElementById('selected-movie-info').innerText = `${selectedMovie.genre} • ${selectedMovie.duration} mins`;
-    document.getElementById('show-selection-modal').classList.add('active');
-    document.getElementById('booking-widget').style.display = 'none';
-
-    const showsList = document.getElementById('shows-list');
-    showsList.innerHTML = '<div class="loading-spinner">Fetching showtimes...</div>';
-
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/shows/movie/${movieId}`);
-        const shows = await response.json().catch(() => null);
-
-        if (!response.ok || !Array.isArray(shows)) {
-            showsList.innerHTML = `<p class="text-danger">⚠️ Show service unavailable (HTTP ${response.status}). Please ensure cinepass-show-service is running on port 8082.</p>`;
-            return;
-        }
-
-        if (shows.length === 0) {
-            showsList.innerHTML = '<p class="text-muted">No scheduled shows found for this movie.</p>';
-            return;
-        }
-
-        showsList.innerHTML = shows.map(s => {
-            const date = new Date(s.showTime);
-            const formatted = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            const isLow = s.availableSeats < 15;
-
-            return `
-                <div class="show-slot-card" id="show-slot-${s.showId}" onclick="selectShowSlot(${JSON.stringify(s).replace(/"/g, '&quot;')})">
-                    <div class="show-time-text">🕒 ${formatted}</div>
-                    <div class="show-seats-count ${isLow ? 'low' : ''}">
-                        💺 ${s.availableSeats} Seats Left ${isLow ? '(Selling Fast!)' : ''}
-                    </div>
-                </div>
-            `;
-        }).join('');
-    } catch (err) {
-        showsList.innerHTML = `<p class="text-danger">Failed to fetch shows: ${err.message}</p>`;
-    }
+function mergeShows(newShows) {
+    const map = new Map(showsCache.map(s => [s.showId, s]));
+    newShows.forEach(s => map.set(s.showId, s));
+    return Array.from(map.values());
 }
 
 function closeShowModal() {
@@ -414,158 +447,136 @@ function closeShowModal() {
     selectedSeats = [];
 }
 
-function selectShowSlot(show) {
+function selectShowSlot(showId) {
+    const show = showsCache.find(s => s.showId === showId);
+    if (!show) return;
     selectedShow = show;
-    selectedSeats = ['A1']; // default 1 seat
+    selectedSeats = [];
 
     document.querySelectorAll('.show-slot-card').forEach(c => c.classList.remove('selected'));
-    const slotCard = document.getElementById(`show-slot-${show.showId}`);
-    if (slotCard) slotCard.classList.add('selected');
+    const card = document.getElementById(`show-slot-${showId}`);
+    if (card) card.classList.add('selected');
 
-    const widget = document.getElementById('booking-widget');
-    widget.style.display = 'block';
-
-    renderSeatMap(show.availableSeats);
+    document.getElementById('booking-widget').style.display = 'block';
+    renderSeatMap();
     updateBookingSummary();
+    document.getElementById('booking-widget').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function renderSeatMap(availableSeats) {
-    const seatContainer = document.getElementById('seat-map-container');
-    const rows = [
-        { name: 'A', tier: 'VIP RECLINER ($18.00)', price: 18.00, count: 8 },
-        { name: 'B', tier: 'VIP RECLINER ($18.00)', price: 18.00, count: 8 },
-        { name: 'C', tier: 'EXECUTIVE GOLD ($14.00)', price: 14.00, count: 8 },
-        { name: 'D', tier: 'EXECUTIVE GOLD ($14.00)', price: 14.00, count: 8 },
-        { name: 'E', tier: 'CLASSIC STANDARD ($10.00)', price: 10.00, count: 8 }
-    ];
-
-    let overallIndex = 1;
+function renderSeatMap() {
+    const available = selectedShow ? selectedShow.availableSeats : 0;
+    let index = 1;
     let html = '';
-
-    rows.forEach(r => {
+    SEAT_ROWS.forEach(r => {
         html += `<div class="seat-row-label-header">
-                    <span class="row-letter">${r.name}</span>
-                    <span class="row-tier-tag">${r.tier}</span>
-                 </div>`;
-        html += `<div class="seat-row">`;
+                    <span class="row-letter">Row ${r.name}</span>
+                    <span class="row-tier-tag">${r.tier} &middot; $${r.price.toFixed(2)}</span>
+                 </div><div class="seat-row">`;
         for (let i = 1; i <= r.count; i++) {
-            const seatId = `${r.name}${i}`;
-            const isOccupied = overallIndex > availableSeats;
-            const isSelected = selectedSeats.includes(seatId);
-            html += `
-                <div class="seat-item ${isOccupied ? 'occupied' : ''} ${isSelected ? 'selected' : ''}" 
-                     data-seat-id="${seatId}"
-                     data-price="${r.price}"
-                     title="Seat ${seatId} - ${r.tier}"
-                     onclick="toggleSeatSelection('${seatId}', ${isOccupied})">
-                    ${seatId}
-                </div>
-            `;
-            overallIndex++;
+            const id = `${r.name}${i}`;
+            const occupied = index > available;
+            const selected = selectedSeats.includes(id);
+            html += `<div class="seat-item ${occupied ? 'occupied' : ''} ${selected ? 'selected' : ''}"
+                          role="button" tabindex="${occupied ? -1 : 0}" aria-pressed="${selected}"
+                          title="Seat ${id} \u2014 ${r.tier}"
+                          onclick="toggleSeatSelection('${id}', ${occupied})"
+                          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSeatSelection('${id}', ${occupied});}">${id}</div>`;
+            index++;
         }
-        html += `</div>`;
+        html += '</div>';
     });
-
-    seatContainer.innerHTML = html;
+    document.getElementById('seat-map-container').innerHTML = html;
 }
 
-function toggleSeatSelection(seatId, isOccupied) {
-    if (isOccupied) return;
-    const index = selectedSeats.indexOf(seatId);
-    if (index > -1) {
-        selectedSeats.splice(index, 1);
+function toggleSeatSelection(seatId, occupied) {
+    if (occupied || !selectedShow) return;
+    const i = selectedSeats.indexOf(seatId);
+    if (i > -1) {
+        selectedSeats.splice(i, 1);
     } else {
-        if (selectedSeats.length >= 6) {
-            showToast('Fair Booking Policy: Maximum 6 seats per transaction.', 'warning');
+        if (selectedSeats.length >= MAX_SEATS) {
+            showToast(`Booking policy: a maximum of ${MAX_SEATS} seats per transaction.`, 'warning');
             return;
         }
         selectedSeats.push(seatId);
     }
-    renderSeatMap(selectedShow.availableSeats);
+    renderSeatMap();
     updateBookingSummary();
+}
+
+function seatPrice(seatId) {
+    const row = SEAT_ROWS.find(r => seatId.startsWith(r.name));
+    return row ? row.price : 10.0;
 }
 
 function updateBookingSummary() {
     if (!selectedShow) return;
-    const count = selectedSeats.length || 1;
-    
-    // Calculate accurate seat pricing based on row
-    let subtotal = 0;
-    selectedSeats.forEach(s => {
-        if (s.startsWith('A') || s.startsWith('B')) subtotal += 18.00;
-        else if (s.startsWith('C') || s.startsWith('D')) subtotal += 14.00;
-        else subtotal += 10.00;
-    });
-    if (selectedSeats.length === 0) subtotal = 14.00;
-
-    const bookingFee = 1.50 * count;
-    const total = (subtotal + bookingFee).toFixed(2);
-
-    document.getElementById('summary-show-id').innerText = `#${selectedShow.showId}`;
-    document.getElementById('summary-seats-count').innerText = `${selectedSeats.join(', ') || '1 Seat'} (${count} Total)`;
-    document.getElementById('summary-total-price').innerText = `$${total} (inc. fee)`;
+    const count = selectedSeats.length;
+    const subtotal = selectedSeats.reduce((sum, s) => sum + seatPrice(s), 0);
+    const total = subtotal + BOOKING_FEE * count;
+    document.getElementById('summary-show-id').textContent = `#${selectedShow.showId}`;
+    document.getElementById('summary-seats-count').textContent = count ? `${selectedSeats.join(', ')} (${count})` : 'None selected';
+    document.getElementById('summary-total-price').textContent = `$${total.toFixed(2)}${count ? ' (incl. fees)' : ''}`;
 }
 
-// =========================================================================
-// 4. Booking Execution & Concurrency Protection
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 5. Booking
+// ---------------------------------------------------------------------------
 async function confirmBooking() {
-    if (!currentUser || !currentToken) {
-        showToast('Please sign in first to complete your booking.', 'info');
+    if (!isLoggedIn()) {
+        showToast('Please sign in to complete your reservation.', 'info');
         openAuthModal('login');
         return;
     }
+    if (!selectedShow) return showToast('Please select a performance.', 'error');
+    if (selectedSeats.length === 0) return showToast('Please select at least one seat.', 'warning');
 
-    if (!selectedShow) {
-        showToast('Please select a showtime slot.', 'error');
+    const btn = document.getElementById('confirm-booking-btn');
+    btn.disabled = true;
+    btn.textContent = 'Reserving\u2026';
+
+    const res = await api('/api/bookings', {
+        method: 'POST',
+        auth: true,
+        headers: { 'X-User-Id': String(currentUser.userId || '') },
+        body: { userId: currentUser.userId, showId: Number(selectedShow.showId), seatsBooked: selectedSeats.length }
+    });
+
+    btn.disabled = false;
+    btn.textContent = 'Confirm Reservation';
+
+    if (res.status === 409) {
+        showToast(errorMessage(res, 'Those seats are no longer available.'), 'error');
+        refreshSelectedShow();
         return;
     }
+    if (res.status === 429) return showToast(errorMessage(res, 'Too many requests. Please wait a moment.'), 'warning');
+    if (!res.ok) return showToast(errorMessage(res, 'Booking failed.'), 'error');
 
-    const seatsCount = selectedSeats.length || 1;
-    const confirmBtn = document.getElementById('confirm-booking-btn');
-    confirmBtn.disabled = true;
-    confirmBtn.innerText = '⚡ Allocating Seats...';
+    const title = selectedMovie ? selectedMovie.title : 'CinePass Screening';
+    closeShowModal();
+    showTicketPassModal(res.data, title);
+    showToast('Reservation confirmed.', 'success');
+}
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/bookings`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${currentToken}`,
-                'X-User-Id': currentUser.userId ? currentUser.userId.toString() : '1'
-            },
-            body: JSON.stringify({
-                userId: currentUser.userId || 1,
-                showId: parseInt(selectedShow.showId, 10),
-                seatsBooked: seatsCount
-            })
-        });
-
-        const data = await response.json();
-
-        if (response.status === 409) {
-            throw new Error(`🚫 Concurrency Conflict: ${data.message || 'Insufficient seats remaining'}`);
-        } else if (!response.ok) {
-            throw new Error(data.message || 'Booking failed');
-        }
-
-        closeShowModal();
-        showTicketPassModal(data, selectedMovie.title);
-        showToast('🎉 Booking Confirmed Successfully!', 'success');
-    } catch (err) {
-        showToast(err.message, 'error');
-    } finally {
-        confirmBtn.disabled = false;
-        confirmBtn.innerText = '⚡ Confirm Instant Booking';
+async function refreshSelectedShow() {
+    if (!selectedShow) return;
+    const res = await api(`/api/shows/${selectedShow.showId}`);
+    if (res.ok && res.data) {
+        selectedShow = res.data;
+        showsCache = mergeShows([res.data]);
+        selectedSeats = [];
+        renderSeatMap();
+        updateBookingSummary();
     }
 }
 
 function showTicketPassModal(booking, movieTitle) {
-    document.getElementById('ticket-movie-title').innerText = movieTitle || 'CinePass Screening';
-    document.getElementById('ticket-booking-id').innerText = `#${booking.bookingId}`;
-    document.getElementById('ticket-seats-count').innerText = `${booking.seatsBooked} Seat(s)`;
-    document.getElementById('ticket-show-id').innerText = `#${booking.showId}`;
-    document.getElementById('ticket-status').innerText = booking.bookingStatus;
+    document.getElementById('ticket-movie-title').textContent = movieTitle;
+    document.getElementById('ticket-booking-id').textContent = `#${booking.bookingId}`;
+    document.getElementById('ticket-seats-count').textContent = `${booking.seatsBooked} seat${booking.seatsBooked === 1 ? '' : 's'}`;
+    document.getElementById('ticket-show-id').textContent = `#${booking.showId}`;
+    document.getElementById('ticket-status').textContent = booking.bookingStatus || 'CONFIRMED';
     document.getElementById('ticket-pass-modal').classList.add('active');
 }
 
@@ -574,222 +585,148 @@ function closeTicketModal() {
     switchView('bookings-view');
 }
 
-// =========================================================================
-// 5. User Bookings Management
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 6. My tickets
+// ---------------------------------------------------------------------------
 async function loadUserBookings() {
     const grid = document.getElementById('bookings-grid');
 
-    if (!currentUser || !currentToken) {
+    if (!isLoggedIn()) {
         grid.innerHTML = `
-            <div class="text-center" style="grid-column: 1/-1; padding: 3rem;">
-                <p class="text-muted" style="margin-bottom: 1rem;">Please sign in to view your CinePass tickets.</p>
+            <div class="empty-state">
+                <h3>Sign in required</h3>
+                <p>Please sign in to view your tickets.</p>
                 <button class="btn btn-primary" onclick="openAuthModal('login')">Sign In</button>
-            </div>
-        `;
+            </div>`;
         return;
     }
 
-    grid.innerHTML = '<div class="loading-spinner">Loading your ticket history...</div>';
+    grid.innerHTML = '<div class="loading-spinner">Loading your tickets&hellip;</div>';
+    const res = await api(`/api/bookings/user/${currentUser.userId}`, { auth: true });
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/bookings/user/${currentUser.userId}`, {
-            headers: { 'Authorization': `Bearer ${currentToken}` }
-        });
-
-        const bookings = await response.json().catch(() => null);
-
-        if (!response.ok || !Array.isArray(bookings)) {
-            grid.innerHTML = `<p class="text-danger" style="grid-column: 1/-1; text-align: center; padding: 2rem;">⚠️ Booking service unavailable (HTTP ${response.status}). Please ensure cinepass-booking-service is running on port 8083.</p>`;
-            return;
-        }
-
-        if (bookings.length === 0) {
-            grid.innerHTML = '<p class="text-muted" style="grid-column: 1/-1; text-align: center; padding: 2rem;">You have no ticket bookings yet.</p>';
-            return;
-        }
-
-        grid.innerHTML = bookings.map(b => `
-            <div class="booking-card">
-                <div class="booking-card-header">
-                    <span class="booking-id-tag">TICKET #${b.bookingId}</span>
-                    <span class="status-badge ${b.bookingStatus}">${b.bookingStatus}</span>
-                </div>
-                <div class="booking-details-row">
-                    <span>Show ID:</span>
-                    <strong>#${b.showId}</strong>
-                </div>
-                <div class="booking-details-row">
-                    <span>Seats Booked:</span>
-                    <strong>${b.seatsBooked} Seats</strong>
-                </div>
-                <div class="booking-details-row">
-                    <span>Booking Date:</span>
-                    <strong>${new Date(b.createdAt || Date.now()).toLocaleDateString()}</strong>
-                </div>
-                ${b.bookingStatus === 'CONFIRMED' ? `
-                    <button class="btn btn-outline btn-block" style="margin-top: 1rem; color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" 
-                            onclick="cancelUserBooking(${b.bookingId})">
-                        ❌ Cancel & Refund Seats
-                    </button>
-                ` : ''}
-            </div>
-        `).join('');
-    } catch (err) {
-        grid.innerHTML = `<p class="text-danger">Failed to load bookings: ${err.message}</p>`;
+    if (res.status === 401) return; // session handler already took over
+    if (!res.ok || !Array.isArray(res.data)) {
+        grid.innerHTML = serviceDownBox('Booking service unavailable',
+            res.networkError ? 'The gateway could not be reached.' : `The booking service returned HTTP ${res.status}.`,
+            'loadUserBookings()');
+        return;
     }
+    if (res.data.length === 0) {
+        grid.innerHTML = `<div class="empty-state"><h3>No tickets yet</h3><p>Your reservations will appear here once you book a performance.</p>
+            <button class="btn btn-secondary" onclick="switchView('movies-view')">Browse Films</button></div>`;
+        return;
+    }
+
+    const sorted = [...res.data].sort((a, b) => (b.bookingId || 0) - (a.bookingId || 0));
+    grid.innerHTML = sorted.map(b => {
+        const status = escapeHtml(b.bookingStatus || 'UNKNOWN');
+        return `
+        <div class="booking-card">
+            <div class="booking-card-header">
+                <span class="booking-id-tag">Ticket #${b.bookingId}</span>
+                <span class="status-badge ${status}">${status}</span>
+            </div>
+            <div class="booking-details-row"><span>Performance</span><strong>#${b.showId}</strong></div>
+            <div class="booking-details-row"><span>Seats</span><strong>${b.seatsBooked}</strong></div>
+            ${b.bookingStatus === 'CONFIRMED' ? `
+                <button class="btn btn-outline btn-block booking-cancel" onclick="cancelUserBooking(${b.bookingId})">Cancel &amp; Refund Seats</button>` : ''}
+        </div>`;
+    }).join('');
 }
 
 async function cancelUserBooking(bookingId) {
-    if (!confirm('Are you sure you want to cancel this booking and refund the seats back to inventory?')) return;
-
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/bookings/${bookingId}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${currentToken}` }
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.message || 'Failed to cancel booking');
-        }
-
-        showToast('Ticket cancelled and seats refunded to inventory.', 'success');
-        loadUserBookings();
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
+    if (!confirm('Cancel this booking and release the seats?')) return;
+    const res = await api(`/api/bookings/${bookingId}`, { method: 'DELETE', auth: true });
+    if (res.status === 401) return;
+    if (!res.ok) return showToast(errorMessage(res, 'Unable to cancel the booking.'), 'error');
+    showToast('Booking cancelled and seats released.', 'success');
+    loadUserBookings();
 }
 
-// =========================================================================
-// 6. High Concurrency Simulator Engine
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 7. Concurrency test (admin)
+// ---------------------------------------------------------------------------
 async function loadShowsForAdminAndSim() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/shows`);
-        const shows = await response.json().catch(() => null);
-        if (response.ok && Array.isArray(shows)) {
-            showsCache = shows;
+    const res = await api('/api/shows');
+    if (!res.ok || !Array.isArray(res.data)) return;
+    showsCache = mergeShows(res.data);
 
-            const simSelect = document.getElementById('sim-target-show');
-            if (simSelect) {
-                if (shows.length === 0) {
-                    simSelect.innerHTML = '<option value="">No shows available</option>';
-                } else {
-                    simSelect.innerHTML = shows.map(s => `
-                        <option value="${s.showId}">Show #${s.showId} (Movie #${s.movieId}) — ${s.availableSeats} Available Seats</option>
-                    `).join('');
-                }
-            }
-        }
-    } catch (err) {
-        console.error('Failed to load shows:', err);
-    }
+    const select = document.getElementById('sim-target-show');
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = res.data.length === 0
+        ? '<option value="">No performances available</option>'
+        : res.data.map(s => {
+            const movie = moviesCache.find(m => Number(m.movieId) === Number(s.movieId));
+            const label = movie ? movie.title : `Movie #${s.movieId}`;
+            return `<option value="${s.showId}">Show #${s.showId} \u2014 ${escapeHtml(label)} \u2014 ${s.availableSeats} seats</option>`;
+        }).join('');
+    if (previous) select.value = previous;
 }
 
 async function runConcurrencySimulation() {
     const showId = document.getElementById('sim-target-show').value;
-    const usersCount = parseInt(document.getElementById('sim-users-count').value, 10);
-    const seatsPerUser = parseInt(document.getElementById('sim-seats-per-user').value, 10);
+    const usersCount = clamp(parseInt(document.getElementById('sim-users-count').value, 10) || 2, 2, 50);
+    const seatsPerUser = clamp(parseInt(document.getElementById('sim-seats-per-user').value, 10) || 1, 1, MAX_SEATS);
     const runBtn = document.getElementById('run-sim-btn');
 
-    if (!showId) {
-        showToast('No show selected for simulation.', 'error');
-        return;
-    }
+    if (!showId) return showToast('No performance selected.', 'error');
 
-    // Fetch latest fresh show status
-    let initialSeats = 0;
-    try {
-        const showRes = await fetch(`${API_BASE_URL}/api/shows/${showId}`);
-        const showData = await showRes.json();
-        initialSeats = showData.availableSeats;
-    } catch (e) {
-        initialSeats = 10;
-    }
+    const before = await api(`/api/shows/${showId}`);
+    const initialSeats = before.ok && before.data ? before.data.availableSeats : '?';
 
-    document.getElementById('metric-start-inventory').innerText = initialSeats;
-    document.getElementById('metric-confirmed').innerText = '0';
-    document.getElementById('metric-rejected').innerText = '0';
-    document.getElementById('metric-final-seats').innerText = '...';
+    document.getElementById('metric-start-inventory').textContent = initialSeats;
+    document.getElementById('metric-confirmed').textContent = '0';
+    document.getElementById('metric-rejected').textContent = '0';
+    document.getElementById('metric-final-seats').textContent = '\u2026';
 
     runBtn.disabled = true;
-    runBtn.innerText = '⚡ Simulating Rush...';
+    runBtn.textContent = 'Running\u2026';
+    logSim(`Starting ${usersCount} simultaneous requests for show #${showId} (${seatsPerUser} seat(s) each). Inventory: ${initialSeats}.`, 'info');
 
-    logSim(`[SIMULATOR START] Initiating ${usersCount} simultaneous booking threads for Show #${showId}. Starting inventory: ${initialSeats} seats. Demanded total: ${usersCount * seatsPerUser} seats.`, 'info');
-
-    let confirmedCount = 0;
-    let rejectedCount = 0;
-
-    let simToken = currentToken;
-    if (!simToken) {
-        try {
-            logSim('[AUTHENTICATING] Obtaining demonstration JWT token for simulation...', 'info');
-            const authRes = await fetch(`${API_BASE_URL}/api/users/signin`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: 'john@example.com', password: 'password123' })
-            });
-            const authData = await authRes.json();
-            if (authData.token) {
-                simToken = authData.token;
-            }
-        } catch (e) {
-            console.warn('Auto-auth for simulator failed:', e);
-        }
+    // Use the signed-in admin's token; otherwise fall back to the demo account.
+    let token = isLoggedIn() ? currentToken : null;
+    if (!token) {
+        logSim('Obtaining demonstration token\u2026', 'info');
+        const auth = await api('/api/users/signin', { method: 'POST', body: { username: 'john_doe', password: 'password123' } });
+        if (auth.ok && auth.data && auth.data.jwt) token = auth.data.jwt;
+        else logSim('Could not obtain a token; requests may be rejected.', 'conflict');
     }
 
-    // Create an array of simultaneous promises
-    const promises = Array.from({ length: usersCount }, (_, i) => {
-        const simulatedUserId = 100 + i;
-        const headers = {
-            'Content-Type': 'application/json',
-            'X-User-Id': simulatedUserId.toString()
-        };
-        if (simToken) {
-            headers['Authorization'] = `Bearer ${simToken}`;
-        }
+    let confirmed = 0, rejected = 0;
+    const jobs = Array.from({ length: usersCount }, (_, i) => {
+        const uid = 100 + i;
+        const headers = { 'Content-Type': 'application/json', 'X-User-Id': String(uid), Accept: 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
         return fetch(`${API_BASE_URL}/api/bookings`, {
             method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-                userId: simulatedUserId,
-                showId: parseInt(showId, 10),
-                seatsBooked: seatsPerUser
-            })
+            headers,
+            body: JSON.stringify({ userId: uid, showId: parseInt(showId, 10), seatsBooked: seatsPerUser })
         }).then(async res => {
             const data = await res.json().catch(() => ({}));
-            if (res.status === 201 || res.status === 200) {
-                confirmedCount++;
-                document.getElementById('metric-confirmed').innerText = confirmedCount;
-                logSim(`Thread [User #${simulatedUserId}] -> SUCCESS: Allocated ${seatsPerUser} seats. Booking ID #${data.bookingId}.`, 'success');
+            if (res.status === 200 || res.status === 201) {
+                confirmed++;
+                document.getElementById('metric-confirmed').textContent = confirmed;
+                logSim(`Patron ${uid}: confirmed, booking #${data.bookingId}.`, 'success');
             } else if (res.status === 409) {
-                rejectedCount++;
-                document.getElementById('metric-rejected').innerText = rejectedCount;
-                logSim(`Thread [User #${simulatedUserId}] -> CONFLICT (409): Rejected. Insufficient inventory.`, 'conflict');
+                rejected++;
+                document.getElementById('metric-rejected').textContent = rejected;
+                logSim(`Patron ${uid}: rejected (409), insufficient inventory.`, 'conflict');
             } else {
-                logSim(`Thread [User #${simulatedUserId}] -> Status ${res.status}: ${data.message || 'Error'}`, 'info');
+                logSim(`Patron ${uid}: HTTP ${res.status} \u2014 ${data.message || 'error'}`, 'info');
             }
-        }).catch(err => {
-            logSim(`Thread [User #${simulatedUserId}] -> Network Error: ${err.message}`, 'conflict');
-        });
+        }).catch(err => logSim(`Patron ${uid}: network error \u2014 ${err.message}`, 'conflict'));
     });
 
-    await Promise.all(promises);
+    await Promise.all(jobs);
 
-    // Refresh final database state
-    try {
-        const finalShowRes = await fetch(`${API_BASE_URL}/api/shows/${showId}`);
-        const finalShowData = await finalShowRes.json();
-        document.getElementById('metric-final-seats').innerText = finalShowData.availableSeats;
-
-        logSim(`[SIMULATOR COMPLETE] Final DB Available Seats: ${finalShowData.availableSeats}. Total Confirmed: ${confirmedCount}, Total Blocked: ${rejectedCount}. Zero Double-Bookings!`, 'info');
-    } catch (e) {
-        document.getElementById('metric-final-seats').innerText = '0';
-    }
+    const after = await api(`/api/shows/${showId}`);
+    const finalSeats = after.ok && after.data ? after.data.availableSeats : '?';
+    document.getElementById('metric-final-seats').textContent = finalSeats;
+    logSim(`Complete. Final seats: ${finalSeats}. Confirmed: ${confirmed}. Rejected: ${rejected}.`, 'info');
 
     runBtn.disabled = false;
-    runBtn.innerText = '🔥 Launch Simultaneous Rush';
+    runBtn.textContent = 'Run Simultaneous Test';
     loadShowsForAdminAndSim();
 }
 
@@ -797,124 +734,86 @@ function logSim(msg, type = 'info') {
     const stream = document.getElementById('sim-logs-stream');
     const entry = document.createElement('div');
     entry.className = `log-entry ${type}`;
-    const timestamp = new Date().toISOString().split('T')[1].slice(0, 8);
-    entry.innerText = `[${timestamp}] ${msg}`;
+    entry.textContent = `[${new Date().toTimeString().slice(0, 8)}] ${msg}`;
     stream.appendChild(entry);
     stream.scrollTop = stream.scrollHeight;
 }
 
 function clearSimLogs() {
-    document.getElementById('sim-logs-stream').innerHTML = '<div class="log-entry info">Simulation log cleared.</div>';
+    document.getElementById('sim-logs-stream').innerHTML = '<div class="log-entry info">Log cleared.</div>';
 }
 
-// =========================================================================
-// 7. Admin Control Operations
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 8. Management (admin)
+// ---------------------------------------------------------------------------
 function populateAdminMovieDropdown(movies) {
     const select = document.getElementById('admin-show-movie-select');
-    if (select) {
-        select.innerHTML = movies.map(m => `
-            <option value="${m.movieId}">${m.title} (${m.duration} mins)</option>
-        `).join('');
+    if (!select) return;
+    select.innerHTML = movies.map(m =>
+        `<option value="${m.movieId}">${escapeHtml(m.title)} (${m.duration} min)</option>`).join('');
+}
+
+function requireAdmin(action) {
+    if (!isLoggedIn() || currentUser.role !== 'ADMIN') {
+        showToast(`Administrator access is required to ${action}.`, 'error');
+        return false;
     }
+    return true;
 }
 
 async function handleAddMovie(event) {
     event.preventDefault();
-    if (!currentUser || currentUser.role !== 'ADMIN') {
-        showToast('Admin authorization required to create movies.', 'error');
-        return;
-    }
+    if (!requireAdmin('add films')) return;
 
     const title = document.getElementById('admin-movie-title').value.trim();
     const genre = document.getElementById('admin-movie-genre').value.trim();
     const duration = parseInt(document.getElementById('admin-movie-duration').value, 10);
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/movies`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${currentToken}`
-            },
-            body: JSON.stringify({ title, genre, duration })
-        });
+    const res = await api('/api/movies', { method: 'POST', auth: true, body: { title, genre, duration } });
+    if (!res.ok) return showToast(errorMessage(res, 'Failed to add film.'), 'error');
 
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Failed to add movie');
-
-        showToast(`Movie "${title}" added successfully!`, 'success');
-        document.getElementById('add-movie-form').reset();
-        loadMovies();
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
+    showToast(`"${title}" added to the programme.`, 'success');
+    document.getElementById('add-movie-form').reset();
+    loadMovies();
 }
 
 async function handleScheduleShow(event) {
     event.preventDefault();
-    if (!currentUser || currentUser.role !== 'ADMIN') {
-        showToast('Admin authorization required to schedule shows.', 'error');
-        return;
-    }
+    if (!requireAdmin('schedule performances')) return;
 
     const movieId = parseInt(document.getElementById('admin-show-movie-select').value, 10);
-    const showTimeRaw = document.getElementById('admin-show-time').value;
+    const raw = document.getElementById('admin-show-time').value;
     const availableSeats = parseInt(document.getElementById('admin-show-capacity').value, 10);
+    if (!raw || isNaN(movieId)) return showToast('Please choose a film and a showtime.', 'error');
 
-    if (!showTimeRaw) {
-        showToast('Please select a valid showtime.', 'error');
-        return;
-    }
+    const showTime = raw.length === 16 ? `${raw}:00` : raw; // datetime-local -> ISO with seconds
+    const res = await api('/api/shows', { method: 'POST', auth: true, body: { movieId, showTime, availableSeats } });
+    if (!res.ok) return showToast(errorMessage(res, 'Failed to schedule performance.'), 'error');
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/api/shows`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${currentToken}`
-            },
-            body: JSON.stringify({
-                movieId,
-                showTime: showTimeRaw + ':00',
-                availableSeats
-            })
-        });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Failed to schedule show');
-
-        showToast(`Show scheduled with ${availableSeats} seats!`, 'success');
-        document.getElementById('schedule-show-form').reset();
-        loadShowsForAdminAndSim();
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
+    showToast(`Performance scheduled with ${availableSeats} seats.`, 'success');
+    document.getElementById('schedule-show-form').reset();
+    loadShowsForAdminAndSim();
 }
 
-// =========================================================================
-// 8. Event Listeners & Utilities
-// =========================================================================
+// ---------------------------------------------------------------------------
+// 9. Events & utilities
+// ---------------------------------------------------------------------------
 function setupEventListeners() {
-    // Auth Forms
     document.getElementById('login-form').addEventListener('submit', handleLogin);
     document.getElementById('register-form').addEventListener('submit', handleRegister);
 
-    // Movie Search
+    const searchInput = document.getElementById('movie-search-input');
     document.getElementById('search-movie-btn').addEventListener('click', searchMovies);
+    searchInput.addEventListener('input', searchMovies);
+    searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchMovies(); });
     document.getElementById('reset-search-btn').addEventListener('click', () => {
-        document.getElementById('movie-search-input').value = '';
+        searchInput.value = '';
         loadMovies();
     });
 
-    // Booking actions
     document.getElementById('confirm-booking-btn').addEventListener('click', confirmBooking);
     document.getElementById('refresh-bookings-btn').addEventListener('click', loadUserBookings);
-
-    // Concurrency Sim
     document.getElementById('run-sim-btn').addEventListener('click', runConcurrencySimulation);
-
-    // Admin forms
     document.getElementById('add-movie-form').addEventListener('submit', handleAddMovie);
     document.getElementById('schedule-show-form').addEventListener('submit', handleScheduleShow);
 }
@@ -923,17 +822,20 @@ function showToast(message, type = 'info') {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.innerHTML = `<span>${type === 'success' ? '✅' : type === 'error' ? '⚠️' : 'ℹ️'}</span> <span>${escapeHtml(message)}</span>`;
+    toast.setAttribute('role', 'status');
+    toast.textContent = message;
     container.appendChild(toast);
-
     setTimeout(() => {
         toast.style.opacity = '0';
         setTimeout(() => toast.remove(), 300);
     }, 4000);
 }
 
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+function clamp(n, min, max) { return Math.min(max, Math.max(min, n)); }
 
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
