@@ -163,5 +163,27 @@ D. BOOKING SERVICE (Port: 8084 | Gateway: http://localhost:8080/api/bookings)
   Password : password123
   Role     : ADMIN
 
+
+-------------------------------------------------------------------------------
+5. DATABASE ARCHITECTURE (SINGLE UNIFIED DATABASE: cinepass_db)
+-------------------------------------------------------------------------------
+
+All 4 business microservices connect to one unified PostgreSQL database:
+  Database Name : cinepass_db
+  Host          : localhost:5432
+  Username      : postgres
+  Password      : cbh220410
+
+Tables & Foreign Key Joins:
+  1. users (user_id PK, username, email, password, role)
+  2. movies (movie_id PK, title, genre, duration)
+  3. shows (show_id PK, movie_id FK -> movies.movie_id, show_time, available_seats)
+     - Foreign Key: fk_shows_movie (movie_id REFERENCES movies(movie_id) ON DELETE CASCADE)
+  4. bookings (booking_id PK, user_id FK -> users.user_id, show_id FK -> shows.show_id, seats_booked, booking_status)
+     - Foreign Key: fk_bookings_user (user_id REFERENCES users(user_id) ON DELETE CASCADE)
+     - Foreign Key: fk_bookings_show (show_id REFERENCES shows(show_id) ON DELETE CASCADE)
+
+Database Setup Script:
+  Run setup-single-db.bat to initialize cinepass_db, tables, joins, and seed data.
 ===============================================================================
 

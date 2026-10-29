@@ -1,0 +1,1 @@
+CREATE DATABASE cinepass_db;

@@ -74,10 +74,10 @@ In traditional naive implementations, two or more concurrent requests read the s
 | :--- | :--- | :--- | :--- | :--- |
 | **Eureka Server** | `8761` | `com.klu.cinepasseureka` | N/A | Central service registry and discovery |
 | **API Gateway** | `8080` | `com.klu.cinepassgateway` | N/A | Single entry point, JWT validation filter, and load-balanced routing |
-| **User Service** | `8081` | `com.klu.cinepassuser` | `cinepass_user_db` | User signup, signin, BCrypt encryption, and JWT issuance |
-| **Movie Service** | `8082` | `com.klu.cinepassmovie` | `cinepass_movie_db` | Movie catalog management (CRUD) |
-| **Show Service** | `8083` | `com.klu.cinepassshow` | `cinepass_show_db` | Show scheduling and atomic seat inventory allocation |
-| **Booking Service** | `8084` | `com.klu.cinepassbooking` | `cinepass_booking_db` | High-concurrency ticket booking, status tracking, and cancellation |
+| **User Service** | `8081` | `com.klu.cinepassuser` | `cinepass_db` (`users`) | User signup, signin, BCrypt encryption, and JWT issuance |
+| **Movie Service** | `8082` | `com.klu.cinepassmovie` | `cinepass_db` (`movies`) | Movie catalog management (CRUD) |
+| **Show Service** | `8083` | `com.klu.cinepassshow` | `cinepass_db` (`shows`) | Show scheduling and atomic seat inventory allocation |
+| **Booking Service** | `8084` | `com.klu.cinepassbooking` | `cinepass_db` (`bookings`) | High-concurrency ticket booking, status tracking, and cancellation |
 
 ---
 
@@ -161,7 +161,13 @@ Multiple instances of **Booking Service** (e.g., on ports `8084`, `8085`, `8086`
 - Host: `localhost:5432`
 - User: `postgres`
 - Password: `cbh220410`
-- Databases: `cinepass_user_db`, `cinepass_movie_db`, `cinepass_show_db`, `cinepass_booking_db` (already created via `schema-init-postgres.sql`).
+- Database: `cinepass_db` (Single unified database for all microservices).
+- Tables & Relational Joins:
+  - `users` (user_id PK, username, email, password, role)
+  - `movies` (movie_id PK, title, genre, duration)
+  - `shows` (show_id PK, movie_id FK -> movies.movie_id, show_time, available_seats)
+  - `bookings` (booking_id PK, user_id FK -> users.user_id, show_id FK -> shows.show_id, seats_booked, booking_status)
+- Automated DB Setup script: Double-click or run `setup-single-db.bat` (or execute `init-single-database.sql`).
 
 ### 2. Import into Spring Tool Suite (STS):
 1. Open **STS**.
