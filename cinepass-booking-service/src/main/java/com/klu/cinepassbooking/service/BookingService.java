@@ -34,6 +34,13 @@ public class BookingService {
     // Anti-Bot in-flight concurrency lock per user
     private final java.util.concurrent.ConcurrentHashMap<Long, Long> activeUserBookings = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // Per-show synchronization locks for atomic seat conflict checks
+    private final java.util.concurrent.ConcurrentHashMap<Long, Object> showLocks = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private Object getShowLock(Long showId) {
+        return showLocks.computeIfAbsent(showId, k -> new Object());
+    }
+
     /**
      * High-Concurrency Ticket Booking & Rush-Time Fair Allocation Engine.
      * 
@@ -78,8 +85,8 @@ public class BookingService {
         }
         activeUserBookings.put(userId, now);
 
-        // Rule 2.1: Seat Conflict Validation (Check if any requested seat is already booked)
-        if (booking.getSeatNumbers() != null && !booking.getSeatNumbers().trim().isEmpty()) {
+        // Atomic seat conflict verification & reservation per show
+        synchronized (getShowLock(booking.getShowId())) {
             List<Booking> activeBookings = bookingRepository.findByShowIdAndBookingStatus(booking.getShowId(), "CONFIRMED");
             Set<String> alreadyBooked = new HashSet<>();
             for (Booking b : activeBookings) {
@@ -93,50 +100,70 @@ public class BookingService {
                 }
             }
 
-            List<String> conflicts = new ArrayList<>();
-            for (String s : booking.getSeatNumbers().split(",")) {
-                String trimmed = s.trim();
-                if (!trimmed.isEmpty() && alreadyBooked.contains(trimmed)) {
-                    conflicts.add(trimmed);
+            // Case A: Specific seat numbers requested
+            if (booking.getSeatNumbers() != null && !booking.getSeatNumbers().trim().isEmpty()) {
+                List<String> conflicts = new ArrayList<>();
+                for (String s : booking.getSeatNumbers().split(",")) {
+                    String trimmed = s.trim();
+                    if (!trimmed.isEmpty() && alreadyBooked.contains(trimmed)) {
+                        conflicts.add(trimmed);
+                    }
+                }
+
+                if (!conflicts.isEmpty()) {
+                    Map<String, Object> conflict = new HashMap<>();
+                    conflict.put("code", 409);
+                    conflict.put("message", "Seat(s) " + String.join(", ", conflicts) + " already allocated! Please select different seats.");
+                    return conflict;
+                }
+            } else {
+                // Case B: Auto-assign next available seats so seat_numbers is never null
+                List<String> autoSeats = new ArrayList<>();
+                String[] rows = {"A", "B", "C", "D", "E"};
+                for (String r : rows) {
+                    for (int i = 1; i <= 8; i++) {
+                        String seatId = r + i;
+                        if (!alreadyBooked.contains(seatId)) {
+                            autoSeats.add(seatId);
+                            if (autoSeats.size() == booking.getSeatsBooked()) break;
+                        }
+                    }
+                    if (autoSeats.size() == booking.getSeatsBooked()) break;
+                }
+                if (!autoSeats.isEmpty()) {
+                    booking.setSeatNumbers(String.join(", ", autoSeats));
                 }
             }
 
-            if (!conflicts.isEmpty()) {
+            try {
+                // Call Show Service to reserve seats atomically
+                String url = showServiceUrl + "/" + booking.getShowId() + "/book?seats=" + booking.getSeatsBooked();
+                ResponseEntity<Map> response = restTemplate.postForEntity(url, null, Map.class);
+
+                if (response.getStatusCode() == HttpStatus.OK) {
+                    booking.setBookingStatus("CONFIRMED");
+                    return bookingRepository.save(booking);
+                } else {
+                    Map<String, Object> conflict = new HashMap<>();
+                    conflict.put("code", 409);
+                    conflict.put("message", "Insufficient seats available");
+                    return conflict;
+                }
+            } catch (HttpClientErrorException.Conflict ex) {
                 Map<String, Object> conflict = new HashMap<>();
                 conflict.put("code", 409);
-                conflict.put("message", "Seat(s) " + String.join(", ", conflicts) + " already allocated! Please select different seats.");
+                conflict.put("message", "Insufficient seats available for Show #" + booking.getShowId());
                 return conflict;
-            }
-        }
-
-        try {
-            // Call Show Service to reserve seats atomically
-            String url = showServiceUrl + "/" + booking.getShowId() + "/book?seats=" + booking.getSeatsBooked();
-            ResponseEntity<Map> response = restTemplate.postForEntity(url, null, Map.class);
-
-            if (response.getStatusCode() == HttpStatus.OK) {
-                booking.setBookingStatus("CONFIRMED");
-                return bookingRepository.save(booking);
-            } else {
-                Map<String, Object> conflict = new HashMap<>();
-                conflict.put("code", 409);
-                conflict.put("message", "Insufficient seats available");
-                return conflict;
-            }
-        } catch (HttpClientErrorException.Conflict ex) {
-            Map<String, Object> conflict = new HashMap<>();
-            conflict.put("code", 409);
-            conflict.put("message", "Insufficient seats available for Show #" + booking.getShowId());
-            return conflict;
-        } catch (Exception ex) {
-            Map<String, Object> err = new HashMap<>();
-            err.put("code", 500);
-            err.put("message", "Show Service communication error: " + ex.getMessage());
-            return err;
-        } finally {
-            // Clean up old entries from activeUserBookings map periodically
-            if (activeUserBookings.size() > 500) {
-                activeUserBookings.entrySet().removeIf(e -> (now - e.getValue()) > 5000);
+            } catch (Exception ex) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("code", 500);
+                err.put("message", "Show Service communication error: " + ex.getMessage());
+                return err;
+            } finally {
+                // Clean up old entries from activeUserBookings map periodically
+                if (activeUserBookings.size() > 500) {
+                    activeUserBookings.entrySet().removeIf(e -> (now - e.getValue()) > 5000);
+                }
             }
         }
     }

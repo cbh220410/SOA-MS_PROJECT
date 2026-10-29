@@ -23,21 +23,11 @@ public class BookingController {
 
     @PostMapping
     @Operation(summary = "Book cinema tickets (High-Concurrency Safe)")
-    public ResponseEntity<Object> createBooking(
-            @Valid @RequestBody Booking booking,
-            @RequestHeader(value = "X-User-Id", required = false) String headerUserId) {
-        if (booking.getUserId() == null && headerUserId != null && !headerUserId.trim().isEmpty()) {
-            try {
-                booking.setUserId(Long.parseLong(headerUserId));
-            } catch (NumberFormatException ignored) {}
-        }
-        if (booking.getUserId() == null) {
-            booking.setUserId(1L); // Default fallback demo user
-        }
+    public ResponseEntity<Object> createBooking(@Valid @RequestBody Booking booking) {
         Object result = bookingService.createBooking(booking);
-        if (result instanceof Map<?, ?> map) {
-            Object codeObj = map.get("code");
-            int code = (codeObj instanceof Number) ? ((Number) codeObj).intValue() : 500;
+        if (result instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) result;
+            int code = map.get("code") instanceof Number ? ((Number) map.get("code")).intValue() : 500;
             return new ResponseEntity<>(result, HttpStatus.valueOf(code));
         }
         return new ResponseEntity<>(result, HttpStatus.CREATED);
@@ -75,11 +65,12 @@ public class BookingController {
     @Operation(summary = "Cancel booking and release seats back to inventory")
     public ResponseEntity<Object> cancelBooking(@PathVariable("id") Long id) {
         Object result = bookingService.cancelBooking(id);
-        if (result instanceof Map<?, ?> map) {
-            Object codeObj = map.get("code");
-            int code = (codeObj instanceof Number) ? ((Number) codeObj).intValue() : 500;
+        if (result instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) result;
+            int code = map.get("code") instanceof Number ? ((Number) map.get("code")).intValue() : 500;
             return new ResponseEntity<>(result, HttpStatus.valueOf(code));
         }
         return ResponseEntity.ok(result);
     }
 }
+
