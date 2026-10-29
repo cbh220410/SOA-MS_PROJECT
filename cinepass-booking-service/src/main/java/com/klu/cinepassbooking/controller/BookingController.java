@@ -65,6 +65,12 @@ public class BookingController {
         return ResponseEntity.ok(bookingService.getBookingsByShowId(showId));
     }
 
+    @GetMapping("/show/{showId}/seats")
+    @Operation(summary = "Get all allocated seat numbers for a show")
+    public ResponseEntity<List<String>> getBookedSeatsByShowId(@PathVariable("showId") Long showId) {
+        return ResponseEntity.ok(bookingService.getBookedSeatNumbers(showId));
+    }
+
     @DeleteMapping("/{id}")
     @Operation(summary = "Cancel booking and release seats back to inventory")
     public ResponseEntity<Object> cancelBooking(@PathVariable("id") Long id) {

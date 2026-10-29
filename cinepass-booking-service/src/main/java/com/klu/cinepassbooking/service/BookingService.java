@@ -11,10 +11,13 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class BookingService {
@@ -75,6 +78,37 @@ public class BookingService {
         }
         activeUserBookings.put(userId, now);
 
+        // Rule 2.1: Seat Conflict Validation (Check if any requested seat is already booked)
+        if (booking.getSeatNumbers() != null && !booking.getSeatNumbers().trim().isEmpty()) {
+            List<Booking> activeBookings = bookingRepository.findByShowIdAndBookingStatus(booking.getShowId(), "CONFIRMED");
+            Set<String> alreadyBooked = new HashSet<>();
+            for (Booking b : activeBookings) {
+                if (b.getSeatNumbers() != null) {
+                    for (String s : b.getSeatNumbers().split(",")) {
+                        String trimmed = s.trim();
+                        if (!trimmed.isEmpty()) {
+                            alreadyBooked.add(trimmed);
+                        }
+                    }
+                }
+            }
+
+            List<String> conflicts = new ArrayList<>();
+            for (String s : booking.getSeatNumbers().split(",")) {
+                String trimmed = s.trim();
+                if (!trimmed.isEmpty() && alreadyBooked.contains(trimmed)) {
+                    conflicts.add(trimmed);
+                }
+            }
+
+            if (!conflicts.isEmpty()) {
+                Map<String, Object> conflict = new HashMap<>();
+                conflict.put("code", 409);
+                conflict.put("message", "Seat(s) " + String.join(", ", conflicts) + " already allocated! Please select different seats.");
+                return conflict;
+            }
+        }
+
         try {
             // Call Show Service to reserve seats atomically
             String url = showServiceUrl + "/" + booking.getShowId() + "/book?seats=" + booking.getSeatsBooked();
@@ -117,6 +151,22 @@ public class BookingService {
 
     public List<Booking> getBookingsByShowId(Long showId) {
         return bookingRepository.findByShowId(showId);
+    }
+
+    public List<String> getBookedSeatNumbers(Long showId) {
+        List<Booking> confirmed = bookingRepository.findByShowIdAndBookingStatus(showId, "CONFIRMED");
+        List<String> seats = new ArrayList<>();
+        for (Booking b : confirmed) {
+            if (b.getSeatNumbers() != null) {
+                for (String s : b.getSeatNumbers().split(",")) {
+                    String trimmed = s.trim();
+                    if (!trimmed.isEmpty() && !seats.contains(trimmed)) {
+                        seats.add(trimmed);
+                    }
+                }
+            }
+        }
+        return seats;
     }
 
     @Transactional

@@ -43,8 +43,8 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
             return chain.filter(exchange);
         }
 
-        // Allow GET requests for movie/show viewing if public
-        if (request.getMethod().name().equals("GET") && (path.startsWith("/api/movies") || path.startsWith("/api/shows"))) {
+        // Allow GET requests for movie/show viewing and seat availability map
+        if (request.getMethod().name().equals("GET") && (path.startsWith("/api/movies") || path.startsWith("/api/shows") || path.endsWith("/seats"))) {
             return chain.filter(exchange);
         }
 

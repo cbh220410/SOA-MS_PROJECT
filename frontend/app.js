@@ -44,6 +44,7 @@ let showsCache = [];
 let selectedMovie = null;
 let selectedShow = null;
 let selectedSeats = [];
+let bookedSeatsForShow = [];
 
 const SEAT_ROWS = [
     { name: 'A', tier: 'Premier Recliner', price: 18.0, count: 8 },
@@ -447,7 +448,7 @@ function closeShowModal() {
     selectedSeats = [];
 }
 
-function selectShowSlot(showId) {
+async function selectShowSlot(showId) {
     const show = showsCache.find(s => s.showId === showId);
     if (!show) return;
     selectedShow = show;
@@ -458,14 +459,21 @@ function selectShowSlot(showId) {
     if (card) card.classList.add('selected');
 
     document.getElementById('booking-widget').style.display = 'block';
+
+    // Fetch allocated seats for this show so they show as occupied/booked
+    try {
+        const res = await api(`/api/bookings/show/${showId}/seats`);
+        bookedSeatsForShow = (res.ok && Array.isArray(res.data)) ? res.data : [];
+    } catch (e) {
+        bookedSeatsForShow = [];
+    }
+
     renderSeatMap();
     updateBookingSummary();
     document.getElementById('booking-widget').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function renderSeatMap() {
-    const available = selectedShow ? selectedShow.availableSeats : 0;
-    let index = 1;
     let html = '';
     SEAT_ROWS.forEach(r => {
         html += `<div class="seat-row-label-header">
@@ -474,14 +482,13 @@ function renderSeatMap() {
                  </div><div class="seat-row">`;
         for (let i = 1; i <= r.count; i++) {
             const id = `${r.name}${i}`;
-            const occupied = index > available;
+            const occupied = bookedSeatsForShow.includes(id);
             const selected = selectedSeats.includes(id);
             html += `<div class="seat-item ${occupied ? 'occupied' : ''} ${selected ? 'selected' : ''}"
                           role="button" tabindex="${occupied ? -1 : 0}" aria-pressed="${selected}"
-                          title="Seat ${id} \u2014 ${r.tier}"
+                          title="${occupied ? `Seat ${id} \u2014 Already Allocated / Booked` : `Seat ${id} \u2014 ${r.tier} ($${r.price.toFixed(2)})`}"
                           onclick="toggleSeatSelection('${id}', ${occupied})"
                           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleSeatSelection('${id}', ${occupied});}">${id}</div>`;
-            index++;
         }
         html += '</div>';
     });
@@ -489,7 +496,11 @@ function renderSeatMap() {
 }
 
 function toggleSeatSelection(seatId, occupied) {
-    if (occupied || !selectedShow) return;
+    if (occupied) {
+        showToast(`Seat ${seatId} is already allocated to another patron. Please select an available seat.`, 'warning');
+        return;
+    }
+    if (!selectedShow) return;
     const i = selectedSeats.indexOf(seatId);
     if (i > -1) {
         selectedSeats.splice(i, 1);
@@ -539,7 +550,12 @@ async function confirmBooking() {
         method: 'POST',
         auth: true,
         headers: { 'X-User-Id': String(currentUser.userId || '') },
-        body: { userId: currentUser.userId, showId: Number(selectedShow.showId), seatsBooked: selectedSeats.length }
+        body: { 
+            userId: currentUser.userId, 
+            showId: Number(selectedShow.showId), 
+            seatsBooked: selectedSeats.length,
+            seatNumbers: selectedSeats.join(', ')
+        }
     });
 
     btn.disabled = false;
@@ -565,6 +581,12 @@ async function refreshSelectedShow() {
     if (res.ok && res.data) {
         selectedShow = res.data;
         showsCache = mergeShows([res.data]);
+        try {
+            const seatsRes = await api(`/api/bookings/show/${selectedShow.showId}/seats`);
+            bookedSeatsForShow = (seatsRes.ok && Array.isArray(seatsRes.data)) ? seatsRes.data : [];
+        } catch (e) {
+            bookedSeatsForShow = [];
+        }
         selectedSeats = [];
         renderSeatMap();
         updateBookingSummary();
@@ -574,7 +596,10 @@ async function refreshSelectedShow() {
 function showTicketPassModal(booking, movieTitle) {
     document.getElementById('ticket-movie-title').textContent = movieTitle;
     document.getElementById('ticket-booking-id').textContent = `#${booking.bookingId}`;
-    document.getElementById('ticket-seats-count').textContent = `${booking.seatsBooked} seat${booking.seatsBooked === 1 ? '' : 's'}`;
+    const seatsDisplay = booking.seatNumbers 
+        ? `${booking.seatNumbers} (${booking.seatsBooked} seat${booking.seatsBooked === 1 ? '' : 's'})` 
+        : `${booking.seatsBooked} seat${booking.seatsBooked === 1 ? '' : 's'}`;
+    document.getElementById('ticket-seats-count').textContent = seatsDisplay;
     document.getElementById('ticket-show-id').textContent = `#${booking.showId}`;
     document.getElementById('ticket-status').textContent = booking.bookingStatus || 'CONFIRMED';
     document.getElementById('ticket-pass-modal').classList.add('active');
@@ -627,7 +652,7 @@ async function loadUserBookings() {
                 <span class="status-badge ${status}">${status}</span>
             </div>
             <div class="booking-details-row"><span>Performance</span><strong>#${b.showId}</strong></div>
-            <div class="booking-details-row"><span>Seats</span><strong>${b.seatsBooked}</strong></div>
+            <div class="booking-details-row"><span>Seats</span><strong>${b.seatNumbers ? escapeHtml(b.seatNumbers) + ' (' + b.seatsBooked + ')' : b.seatsBooked}</strong></div>
             ${b.bookingStatus === 'CONFIRMED' ? `
                 <button class="btn btn-outline btn-block booking-cancel" onclick="cancelUserBooking(${b.bookingId})">Cancel &amp; Refund Seats</button>` : ''}
         </div>`;

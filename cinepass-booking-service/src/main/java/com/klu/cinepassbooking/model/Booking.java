@@ -25,6 +25,9 @@ public class Booking {
     @Column(name = "seats_booked", nullable = false)
     private Integer seatsBooked;
 
+    @Column(name = "seat_numbers")
+    private String seatNumbers;
+
     @Column(name = "booking_status", nullable = false)
     private String bookingStatus; // "CONFIRMED", "CANCELLED", "FAILED"
 
@@ -36,6 +39,15 @@ public class Booking {
         this.userId = userId;
         this.showId = showId;
         this.seatsBooked = seatsBooked;
+        this.bookingStatus = bookingStatus;
+    }
+
+    public Booking(Long bookingId, Long userId, Long showId, Integer seatsBooked, String seatNumbers, String bookingStatus) {
+        this.bookingId = bookingId;
+        this.userId = userId;
+        this.showId = showId;
+        this.seatsBooked = seatsBooked;
+        this.seatNumbers = seatNumbers;
         this.bookingStatus = bookingStatus;
     }
 
@@ -69,6 +81,14 @@ public class Booking {
 
     public void setSeatsBooked(Integer seatsBooked) {
         this.seatsBooked = seatsBooked;
+    }
+
+    public String getSeatNumbers() {
+        return seatNumbers;
+    }
+
+    public void setSeatNumbers(String seatNumbers) {
+        this.seatNumbers = seatNumbers;
     }
 
     public String getBookingStatus() {

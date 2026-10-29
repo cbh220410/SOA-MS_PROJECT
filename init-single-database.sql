@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     user_id BIGINT NOT NULL,
     show_id BIGINT NOT NULL,
     seats_booked INT NOT NULL,
+    seat_numbers VARCHAR(255),
     booking_status VARCHAR(20) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_bookings_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
