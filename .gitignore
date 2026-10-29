@@ -18,6 +18,7 @@ tmp/
 .settings/
 .project
 .classpath
+.factorypath
 
 # IntelliJ IDEA
 .idea/
