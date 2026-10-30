@@ -32,3 +32,4 @@ public class OpenApiConfig {
                                 .description("Enter your JWT Token (obtained from /api/users/signin). Format: just the token without 'Bearer ' prefix.")));
     }
 }
+
