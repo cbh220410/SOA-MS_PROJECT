@@ -70,6 +70,16 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
             Object userId = claims.get("userId");
             String role = (String) claims.get("role");
 
+            // Role-Based Access Control (RBAC):
+            // Admin-only operations: Adding, updating, or deleting movies or shows
+            String method = request.getMethod().name();
+            boolean isMovieAdminOp = path.startsWith("/api/movies") && (method.equals("POST") || method.equals("PUT") || method.equals("DELETE"));
+            boolean isShowAdminOp = path.startsWith("/api/shows") && !path.contains("/book") && !path.contains("/cancel") && (method.equals("POST") || method.equals("PUT") || method.equals("DELETE"));
+
+            if ((isMovieAdminOp || isShowAdminOp) && !"ADMIN".equalsIgnoreCase(role)) {
+                return onError(exchange, HttpStatus.FORBIDDEN, "Access Denied: Requires ADMIN role to add, modify, or delete movies/shows");
+            }
+
             ServerHttpRequest mutatedRequest = request.mutate()
                     .header("X-User-Id", userId != null ? String.valueOf(userId) : "")
                     .header("X-User-Name", username)
